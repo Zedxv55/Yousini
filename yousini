@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Zelax launcher — พิมพ์ 'zelax' เพื่อเปิด Agent
+# Yousini launcher — พิมพ์ 'yousini' เพื่อเปิด Agent
 # ไล่ตาม symlink หาตำแหน่งจริงของ repo (แบบเดียวกับ nvm/tools) ใช้เครื่องอื่นได้
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -9,4 +9,4 @@ while [ -h "$SOURCE" ]; do
 done
 AGENT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 cd "$AGENT_DIR" || exit 1
-exec python3 "$AGENT_DIR/zelax.py" "$@"
+exec python3 "$AGENT_DIR/yousini.py" "$@"

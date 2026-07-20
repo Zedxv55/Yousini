@@ -1,7 +1,12 @@
-# Zelax
+# Yousini
 
 Local Coding Agent สไตล์ Claude Code — รับคำสั่งภาษาธรรมชาติ แล้วทำงานบนเครื่องจริงได้เอง:
-รัน shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์ ผ่านทุก OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral ฯลฯ)
+รัน shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์ **และเชื่อมต่อได้ทั้งในเครื่องและออนไลน์** ผ่านทุก OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral ฯลฯ)
+
+- 🖥️ **CLI สวยงาม** — banner ไล่สี, สตรีมสด, diff สี, syntax highlight
+- 🌐 **serve** — เปิดเป็นเว็บ UI + API (SSE) คุยผ่านเบราว์เซอร์ได้
+- 🔗 **connect** — CLI เครื่องหนึ่งคุยกับ Yousini เครื่องอื่น/บริการอื่นผ่านเน็ตได้
+- 🛡️ มีระบบกันคำสั่งอันตราย + ขออนุมัติก่อนรัน/เขียนไฟล์
 
 พัฒนาต่อยอดจากหนังสือ *ai-agent-book* (bojieli) โดยใช้ความสามารถ Tool Calling
 
@@ -12,14 +17,39 @@ Local Coding Agent สไตล์ Claude Code — รับคำสั่ง�
 เปิด terminal แล้วพิมพ์:
 
 ```bash
-zelax
+yousini
 ```
 
 หรือส่งคำสั่งหนึ่งรอบโดยตรง:
 
 ```bash
-zelax "สร้างโฟลเดอร์ demo แล้วเขียนสคริปต์ Python พิมพ์สวัสดี และรันมัน"
+yousini "สร้างโฟลเดอร์ demo แล้วเขียนสคริปต์ Python พิมพ์สวัสดี และรันมัน"
 ```
+
+---
+
+## โหมดเชื่อมต่อ (ใหม่!)
+
+### เปิดเป็นบริการ (เว็บ UI + API)
+
+```bash
+yousini serve                       # เปิดที่ http://localhost:8787 (ในเครื่อง)
+yousini serve --host 0.0.0.0 --token รหัสลับ   # เปิดออนไลน์พร้อม token ป้องกัน
+yousini serve --safe                # แบบอ่านอย่างเดียว (ปิด shell / เขียนไฟล์)
+yousini serve --port 9000 --no-shell
+```
+
+เปิดเบราว์เซอร์ไปที่ `http://localhost:8787/` จะเจอเว็บแชทสวยงาม แชทได้เลย
+โปรแกรมอื่นเรียก API ได้ที่ `POST /api/chat` แบบ Server-Sent Events (ดูตัวอย่างด้านล่าง)
+
+### เชื่อมต่อ CLI ข้ามเครื่อง
+
+```bash
+yousini connect http://10.0.0.5:8787          # คุยกับ Yousini เครื่องอื่น
+yousini connect https://yousini.example.com --token รหัสลับ
+```
+
+ทำให้ CLI สองเครื่อง "คุยกัน" ได้ — ในเครื่องหรือออนไลน์
 
 ---
 
@@ -28,10 +58,9 @@ zelax "สร้างโฟลเดอร์ demo แล้วเขียน�
 - ความจำข้าม turn — Agent จำบริบทการสนทนาได้ตลอดเซสชัน (มี trimming กันบริบทยาวเกิน และกัน tool-result ลอยๆ)
 - Streaming จริง — ตอบสดพร้อมเรนเดอร์ Markdown สดๆ ระหว่างโมเดลพิมพ์
 - UI สไตล์ Claude Code — ใช้ `⏺` (การกระทำ) กับ `⎿` (ผลลัพธ์)
-- Spinner — "กำลังคิด…" ระหว่างรอ → "กำลังเตรียมเครื่องมือ…" ตอนเรียก tool
+- Banner ASCII ไล่สี magenta→cyan อลังการ
 - Diff สี เขียว/แดง ก่อนยืนยันเขียน/แก้ไฟล์ทุกครั้ง
 - Syntax highlighting ตามนามสกุลไฟล์ตอนอ่าน
-- Banner แผงเดียวสะอาด
 - คำสั่ง `/clear` `/history` `/help` + arrow-key history ข้ามเซสชัน (readline)
 
 ---
@@ -39,15 +68,15 @@ zelax "สร้างโฟลเดอร์ demo แล้วเขียน�
 ## ตัวอย่างหน้าจอ (UX/UI CLI)
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│ Zelax  —  ผู้ช่วยเขียนโค้ดบนเครื่อง (สไตล์ Claude Code)      │
-│                                                          │
-│ โมเดล: openai/gpt-oss-120b                               │
-│ Endpoint: https://api.groq.com/openai/v1                 │
-│ โฟลเดอร์: /home/it-admin/project                         │
-│ ขออนุมัติ shell: เปิด (ถามก่อน)                           │
-│ พิมพ์งาน  |  /help /clear /history /model /cwd /approve /exit │
-└──────────────────────────────────────────────────────────┘
+ __   __  _______  __   __  _______  ___   __    _  ___
+|  | |  ||       ||  | |  ||       ||   | |  |  | ||   |
+|  |_|  ||   _   ||  | |  ||  _____||   | |   |_| ||   |
+|       ||  | |  ||  |_|  || |_____ |   | |       ||   |
+|_     _||  |_|  ||       ||_____  ||   | |  _    ||   |
+  |   |  |       ||       | _____| ||   | | | |   ||   |
+  |___|  |_______||_______||_______||___| |_|  |__||___|
+
+  พร้อมทำงาน  ·  ทำงานบนเครื่องจริง + ออนไลน์  ·  เชื่อมต่อข้ามเครื่องได้
 
 ❯ สร้างไฟล์ hello.py ที่พิมพ์สวัสดี แล้วรัน
 กำลังคิด…
@@ -56,10 +85,23 @@ zelax "สร้างโฟลเดอร์ demo แล้วเขียน�
 │ print('สวัสดี')                                                       │
 ╰──────────────────────────────────────────────────────────────────────╯
 ⎿ เขียนสำเร็จ: hello.py (15 ตัวอักษร)
-กำลังเตรียมเครื่องมือ…
 ⏺ shell(python3 hello.py)
 ⎿ [exit code: 0]
 สวัสดี
+```
+
+### ตัวอย่างหน้าจอ (Web UI — `yousini serve`)
+
+เบราว์เซอร์แชทไดนามิก: พื้น aurora เคลื่อนไหว, ฟองแชทแก้ว (glass), ชิปแสดง tool-call สีฟ้า
+ขณะ agent ทำงาน จะเห็น `⏺ shell(...)` โผล่ขึ้นทีละอันพร้อมผลลัพธ์สดแบบสตรีม
+
+### เรียก API จากโปรแกรมอื่น (SSE)
+
+```bash
+curl -N -X POST http://localhost:8787/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"สร้างเว็บ hello world","session":"demo"}'
+# จะได้ stream: data: {"type":"token","text":"..."} ทีละท่อน
 ```
 
 ---
@@ -70,39 +112,41 @@ zelax "สร้างโฟลเดอร์ demo แล้วเขียน�
 
 ```bash
 cp .env.example .env
-# แล้วแก้ ZELAX_API_KEY ใน .env
+# แล้วใส่ YOUSINI_API_KEY ใน .env
 ```
 
 ตัวแปรใน `.env`:
 
 | ตัวแปร | คำอธิบาย | ค่าแนะนำ |
 |---|---|---|
-| `ZELAX_API_KEY` | API Key จาก provider ที่เลือก | — |
-| `ZELAX_BASE_URL` | Endpoint (OpenAI-compatible) | `https://api.groq.com/openai/v1` |
-| `ZELAX_MODEL` | โมเดลที่ใช้ | `openai/gpt-oss-120b` |
+| `YOUSINI_API_KEY` | API Key จาก provider ที่เลือก | — |
+| `YOUSINI_BASE_URL` | Endpoint (OpenAI-compatible) | `https://api.groq.com/openai/v1` |
+| `YOUSINI_MODEL` | โมเดลที่ใช้ | `openai/gpt-oss-120b` |
 | `AUTO_RUN` | `1`=รัน shell ทันทีไม่ถาม (อันตราย) | `0` |
 | `CONFIRM_FILES` | `0`=เขียนไฟล์ไม่ต้องถาม | `1` |
 | `SHELL_TIMEOUT` | ตัดคำสั่งค้างที่ (วินาที) | `60` |
 
+> เข้ากันได้กับของเดิม: หากไม่มี `YOUSINI_*` จะตกไปอ่าน `ZELAX_*` หรือ `GROQ_*` เป็น fallback ให้ย้ายมาใช้ `YOUSINI_*` ได้ทันที
+
 ### เปลี่ยน Provider / โมเดล
 
-Zelax เปิดรับทุก OpenAI-compatible API ไม่ผูกกับ Groq เพียงแก้ `ZELAX_BASE_URL` / `ZELAX_API_KEY` / `ZELAX_MODEL` (ดูตัวอย่างใน `.env.example`):
+Yousini เปิดรับทุก OpenAI-compatible API ไม่ผูกกับ Groq เพียงแก้ `YOUSINI_BASE_URL` / `YOUSINI_API_KEY` / `YOUSINI_MODEL` (ดูตัวอย่างใน `.env.example`):
 
 ```bash
 # OpenAI
-ZELAX_BASE_URL=https://api.openai.com/v1
-ZELAX_API_KEY=sk-...
-ZELAX_MODEL=gpt-4o
+YOUSINI_BASE_URL=https://api.openai.com/v1
+YOUSINI_API_KEY=sk-...
+YOUSINI_MODEL=gpt-4o
 
 # OpenRouter (Claude / Gemini / Llama ฯลฯ)
-ZELAX_BASE_URL=https://openrouter.ai/api/v1
-ZELAX_API_KEY=sk-or-...
-ZELAX_MODEL=anthropic/claude-3.5-sonnet
+YOUSINI_BASE_URL=https://openrouter.ai/api/v1
+YOUSINI_API_KEY=sk-or-...
+YOUSINI_MODEL=anthropic/claude-3.5-sonnet
 
 # DeepSeek
-ZELAX_BASE_URL=https://api.deepseek.com/v1
-ZELAX_API_KEY=sk-...
-ZELAX_MODEL=deepseek-chat
+YOUSINI_BASE_URL=https://api.deepseek.com/v1
+YOUSINI_API_KEY=sk-...
+YOUSINI_MODEL=deepseek-chat
 ```
 
 หรือเปลี่ยนโมเดลทันทีในแชทด้วย `/model <ชื่อ>`
@@ -120,6 +164,8 @@ ZELAX_MODEL=deepseek-chat
 | `list_dir` | แสดงไฟล์ในโฟลเดอร์ |
 | `glob` | หาไฟล์ตามรูปแบบ `*.py` |
 | `grep` | ค้นหาข้อความ (regex) |
+| `web_fetch` | ดึงเนื้อหาเว็บจาก URL (ออนไลน์) |
+| `web_search` | ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์) |
 | `set_cwd` | เปลี่ยนโฟลเดอร์ทำงาน |
 | `ask_user` | ถามผู้ใช้ (เมื่อขาดข้อมูลสำคัญเท่านั้น) |
 
@@ -130,15 +176,16 @@ ZELAX_MODEL=deepseek-chat
 ตัวนี้รันคำสั่งบนเครื่องคุณได้จริง จึงมีระบบป้องกัน:
 
 - ขออนุมัติก่อนรัน shell — แสดงคำสั่ง ถาม `รัน? [y/N/e=แก้ไข]` (พิมพ์ `e` แก้ก่อนรัน)
-- กันคำสั่งอันตราย — `rm -rf`, `dd`, `shutdown` ฯลฯ เตือน + ขออนุมัติเสมอ
+- กันคำสั่งอันตราย — `rm -rf`, `dd`, `shutdown` ฯลฯ เตือน + ขออนุมัติเสมอ (ในโหมด headless/server จะบล็อกเด็ดขาด)
 - ขออนุมัติก่อนเขียน/แก้ไฟล์ (แสดง diff สี)
-- หากโมเดล生成 tool call พัง ระบบจะขอคำตอบแบบปกติแทน (ไม่ crash)
+- หากโมเดลสร้าง tool call พัง ระบบจะขอคำตอบแบบปกติแทน (ไม่ crash)
+- โหมด `serve --safe` หรือ `--no-shell`/`--no-write` ปิดความสามารถที่อาจอันตรายได้
 
 ---
 
 ## คำสั่งในแชท
 
-- `/help` — แสดงคำสั่งทั้งหมด
+- `/help` — แสดงคำสั่งทั้งหมด (รวมโหมด serve / connect)
 - `/clear` — ล้างประวัติการสนทนา
 - `/history` — แสดงประวัติข้อความทั้งหมด
 - `/approve on` — รัน shell ทันทีโดยไม่ถาม (เร็วแต่ระวัง)
@@ -152,14 +199,14 @@ ZELAX_MODEL=deepseek-chat
 ## ติดตั้งบนเครื่องใหม่
 
 ```bash
-git clone https://github.com/Zedxv55/Zelax.git
-cd Zelax
+git clone https://github.com/Zedxv55/Yousini.git
+cd Yousini
 pip install -r requirements.txt
-cp .env.example .env        # แล้วใส่ ZELAX_API_KEY
-# ติดตั้งคำสั่ง zelax ลง PATH ด้วย symlink (launcher ตาม symlink ได้):
-ln -s "$(pwd)/zelax" ~/.local/bin/zelax
+cp .env.example .env        # แล้วใส่ YOUSINI_API_KEY
+# ติดตั้งคำสั่ง yousini ลง PATH ด้วย symlink (launcher ตาม symlink ได้):
+ln -s "$(pwd)/yousini" ~/.local/bin/yousini
 # หรือถ้าใช้ /usr/local/bin:
-# sudo ln -s "$(pwd)/zelax" /usr/local/bin/zelax
+# sudo ln -s "$(pwd)/yousini" /usr/local/bin/yousini
 ```
 
 ใช้ `ln -s` ไม่ใช่ `cp` เพื่อให้ launcher ไล่ตาม symlink หาโฟลเดอร์ repo จริงได้ แม้ย้าย/ลิงก์ข้ามที่
@@ -168,7 +215,7 @@ ln -s "$(pwd)/zelax" ~/.local/bin/zelax
 
 ## Skill
 
-ความสามารถสไตล์ Claude Code ถูกเขียนไว้ใน `SKILL.md` (และฝังใน `zelax.py`)
+ความสามารถสไตล์ Claude Code ถูกเขียนไว้ใน `SKILL.md` (และฝังใน `yousini.py`)
 สามารถ copy ไปวางเป็น system prompt ของ Agent ตัวอื่นได้ทันที
 
 ---
