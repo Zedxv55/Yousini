@@ -59,6 +59,19 @@ def _load_env(path=".env"):
 
 _load_env()
 
+# Windows: บังคับ console เป็น UTF-8 (codepage 65001) เพื่อแสดงภาษาไทยได้
+# แก้ UnicodeEncodeError ตอน rich เรนเดอร์ข้อความไทยบน Windows (cp1252)
+if sys.platform == "win32":
+    try:
+        os.system("chcp 65001 >nul 2>&1")
+    except Exception:
+        pass
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 from openai import OpenAI, BadRequestError
 from rich.console import Console, Group
 from rich.markdown import Markdown
