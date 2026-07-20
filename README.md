@@ -4,9 +4,16 @@ Local Coding Agent สไตล์ Claude Code — รับคำสั่ง�
 รัน shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์ **และเชื่อมต่อได้ทั้งในเครื่องและออนไลน์** ผ่านทุก OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral ฯลฯ)
 
 - 🖥️ **CLI สวยงาม** — banner ไล่สี, สตรีมสด, diff สี, syntax highlight
-- 🌐 **serve** — เปิดเป็นเว็บ UI + API (SSE) คุยผ่านเบราว์เซอร์ได้
+- 🌐 **serve** — เปิดเป็นเว็บ UI + API (SSE) คุยผ่านเบราว์เซอร์ได้ + เก็บ session ลงดิสก์ข้าม restart
 - 🔗 **connect** — CLI เครื่องหนึ่งคุยกับ Yousini เครื่องอื่น/บริการอื่นผ่านเน็ตได้
 - 🛡️ มีระบบกันคำสั่งอันตราย + ขออนุมัติก่อนรัน/เขียนไฟล์
+- 📌 **YOUSINI.md** — บริบทโปรเจกต์ถาวร (เหมือน CLAUDE.md) โหลดอัตโนมัติทุกครั้ง
+- 🧩 **Skills** — โหลด `skills/*.md` เข้า system prompt อัตโนมัติ
+- 🪝 **Hooks** — `pre_tool`/`post_tool` script ตัดสินว่าจะรัน tool ไหม (config ได้)
+- 💾 **Session persistence** — `/save` `/load` `/sessions` บันทึกบทสนทนาลงดิสก์
+- ⏳ **Background shell** — รันคำสั่งยาวแบบไม่บล็อก (`run_in_background`) + `/jobs`
+- 🔖 **Checkpoint/Rollback** — auto `git commit` ก่อนแก้ไฟล์ แล้ว `/rollback` ได้
+- 🔌 **MCP server** — `yousini mcp` ครอบ tools เป็น MCP server ให้ agent ภายนอกเรียกได้
 
 พัฒนาต่อยอดจากหนังสือ *ai-agent-book* (bojieli) โดยใช้ความสามารถ Tool Calling
 
@@ -185,14 +192,80 @@ YOUSINI_MODEL=deepseek-chat
 
 ## คำสั่งในแชท
 
-- `/help` — แสดงคำสั่งทั้งหมด (รวมโหมด serve / connect)
+- `/help` — แสดงคำสั่งทั้งหมด (รวมโหมด serve / connect / mcp)
 - `/clear` — ล้างประวัติการสนทนา
 - `/history` — แสดงประวัติข้อความทั้งหมด
 - `/approve on` — รัน shell ทันทีโดยไม่ถาม (เร็วแต่ระวัง)
 - `/approve off` — กลับไปถามก่อนรัน (ค่าเริ่มต้น แนะนำ)
+- `/reload` — โหลด `YOUSINI.md` + `skills/` ใหม่ (เมื่อแก้ไฟล์บริบทระหว่างทาง)
+- `/skills` — แสดงสกิลที่โหลดอยู่
+- `/hooks` — แสดงสถานะ hooks
 - `/cwd <โฟลเดอร์>` — เปลี่ยนที่ทำงาน
 - `/model <ชื่อ>` — เปลี่ยนโมเดล
+- `/save [ชื่อ]` — บันทึกบทสนทนาลงดิสก์
+- `/load [ชื่อ]` — โหลดบทสนทนาจากดิสก์
+- `/sessions` — แสดงรายการ session ที่บันทึกไว้
+- `/jobs` — แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
+- `/checkpoint` — `git commit` จุดเก็บชั่วคราวเดี๋ยวนั้น
+- `/rollback` — ย้อนกลับไปจุด checkpoint ล่าสุด (git reset --hard)
 - `/exit` — ออก
+
+---
+
+## ฟีเจอร์ขั้นสูง
+
+### 📌 บริบทโปรเจกต์ถาวร (YOUSINI.md)
+
+สร้างไฟล์ `YOUSINI.md` ในโฟลเดอร์โปรเจกต์ (ดู `YOUSINI.example.md`) — Agent จะโหลด
+อัตโนมัติทุกครั้งที่เริ่มงานในโฟลเดอร์นั้น (และโฟลเดอร์แม่ขึ้นไปจน root) รวมถึง
+`~/.yousini.md` ระดับเครื่อง ใช้จดกฎ/stack/convention ของโปรเจกต์
+
+### 🧩 Skills (`skills/*.md`)
+
+ทุกไฟล์ `.md` ในโฟลเดอร์ `skills/` (relative ต่อ cwd) จะถูกโหลดเข้า system prompt
+อัตโนมัติ ดูตัวอย่างได้ที่ `skills/example.md` ใช้เพิ่มความรู้/เวิร์กโฟลว์เฉพาะทาง
+
+### 🪝 Hooks (pre_tool / post_tool)
+
+วางสคริปต์ `pre_tool.sh` และ/หรือ `post_tool.sh` ในโฟลเดอร์ `.yousini/hooks`
+(หรือ `~/.yousini/hooks` หรือระบุผ่าน `YOUSINI_HOOKS=...`) — รันก่อน/หลังทุก tool call:
+
+- `pre_tool` รับ JSON `{"tool","args"}` ทาง stdin + env `YOUSINI_TOOL`/`YOUSINI_CWD`
+  - **exit 0** → อนุญาต · **exit != 0** → บล็อก (stdout กลับเป็นเหตุผลให้โมเดล)
+- `post_tool` รับ `{"tool","args","result"}` — best-effort ไม่เปลี่ยนผลลัพธ์
+
+ดูตัวอย่าง `pre_tool.example.sh` / `post_tool.example.sh` (กันดาวน์โหลดสคริปต์จากเน็ตแล้วรัน, กันแตะไฟล์ระบบ)
+
+### 💾 Session persistence
+
+บทสนทนาถูกบันทึกลงดิสก์ (JSON) ใต้ `~/.yousini/sessions` (หรือ `YOUSINI_SESSIONS=...`):
+
+- `/save [ชื่อ]` บันทึก · `/load [ชื่อ]` โหลด · `/sessions` รายการ
+- `yousini resume` โหลด session ล่าสุดแล้วเข้าสู่แชท
+- โหมด `serve` เก็บ session ของแต่ละ sid ลงดิสก์ด้วย → restart server บริบทไม่หาย
+
+### ⏳ Background shell
+
+ส่ง `run_in_background: true` ให้ tool `shell` สำหรับคำสั่งที่รันนาน Agent จะคืน job id
+ทันทีแล้วคุณสามารถถามผลทีหลังผ่าน `read_job(job_id=...)` หรือดูรายการด้วย `/jobs`
+
+### 🔖 Checkpoint / Rollback
+
+เมื่อเปิด `YOUSINI_CHECKPOINT=1` (ค่าเริ่มต้น) Agent จะ `git commit` จุดเก็บชั่วคราว
+**ก่อน**แก้ไฟล์ในแต่ละรอบการสนทนา หากพังกลางทาง พิมพ์ `/rollback` เพื่อคืนสถานะก่อนแก้
+(ทำงานได้เฉพาะใน git repository)
+
+### 🔌 MCP server (`yousini mcp`)
+
+รัน Yousini เป็น MCP server แบบ stdio (JSON-RPC 2.0) ครอบ tools ทั้งหมด
+ให้ Claude Code หรือ agent อื่นในโลก MCP เรียกใช้ได้:
+
+```bash
+yousini mcp                  # โหมดปลอดภัย: บล็อก shell/write/edit
+yousini mcp --allow-exec     # อนุญาต shell/write/edit (ระวัง)
+```
+
+เชื่อมต่อจาก Claude Code ผ่านไฟล์ตั้งค่า MCP ที่ชี้ไปที่ `yousini mcp` ได้ทันที
 
 ---
 
@@ -211,12 +284,15 @@ ln -s "$(pwd)/yousini" ~/.local/bin/yousini
 
 ใช้ `ln -s` ไม่ใช่ `cp` เพื่อให้ launcher ไล่ตาม symlink หาโฟลเดอร์ repo จริงได้ แม้ย้าย/ลิงก์ข้ามที่
 
+> ติดตั้งแบบแพ็กเกจ (มีคำสั่ง `yousini` จาก console script): `pip install -e .`
+
 ---
 
 ## Skill
 
 ความสามารถสไตล์ Claude Code ถูกเขียนไว้ใน `SKILL.md` (และฝังใน `yousini.py`)
 สามารถ copy ไปวางเป็น system prompt ของ Agent ตัวอื่นได้ทันที
+นอกจากนี้ยังสามารถขยายด้วย `skills/*.md` และ `YOUSINI.md` ตามหัวข้อ "ฟีเจอร์ขั้นสูง" ด้านบน
 
 ---
 

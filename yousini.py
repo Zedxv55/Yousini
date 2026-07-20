@@ -5,17 +5,28 @@ Yousini — Local Coding Agent สไตล์ Claude Code (เชื่อม�
 รับคำสั่งภาษาธรรมชาติ ทำงานบนเครื่องจริงได้: shell / อ่าน-เขียน-แก้ไฟล์ / ค้นหา
 และออนไลน์ได้: web_fetch / web_search ผ่านทุก OpenAI-compatible API
 
-ฟีเจอร์: ความจำข้าม turn · streaming จริง · UI สไตล์ Claude Code (⏺/⎿) ·
-diff สีก่อนเขียน · syntax highlight · spinner · คำสั่ง /clear /history /help
+ฟีเจอร์หลัก:
+- ความจำข้าม turn · streaming จริง · UI สไตล์ Claude Code (⏺/⎿) · diff สีก่อนเขียน
+- syntax highlight · spinner · คำสั่ง /clear /history /help
+- YOUSINI.md — บริบทโปรเจกต์ถาวร (เหมือน CLAUDE.md) โหลดอัตโนมัติ
+- skills/ — โหลดสกิลจากโฟลเดอร์ (เหมือน Skills ของ Claude Code)
+- Hooks — pre_tool/post_tool script ตัดสินว่าจะรัน tool ไหม (config ได้)
+- Session persistence — บันทึก/โหลดบทสนทนาลงดิสก์ (/save /load /sessions)
+- Background shell — รันคำสั่งยาวแบบไม่บล็อก (/jobs, read_job)
+- Checkpoint/Rollback — auto git commit ก่อนแก้ไฟล์ แล้ว /rollback ได้
+- serve — เปิดเว็บ UI + API (SSE) คุยผ่านเบราว์เซอร์/โปรแกรมอื่น
+- connect — CLI เครื่องหนึ่งคุยกับ Yousini อีกเครื่องผ่านเน็ต
+- mcp — เปิดเป็น MCP server (stdio) ให้ agent ภายนอกเรียก tools ได้
 
 รัน:  yousini        (หรือ python3 yousini.py)
 """
 
 import os
 import sys
+import io
 import json
 import re
-import readline
+import shutil
 import atexit
 import subprocess
 import difflib
@@ -23,6 +34,13 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from pathlib import Path
+from datetime import datetime
+
+# readline มีเฉพาะ Unix; บน Windows ให้ข้ามได้ (ประวัติ arrow-key จะไม่ทำงาน)
+try:
+    import readline
+except ImportError:
+    readline = None
 
 # ---- โหลด .env เอง (ไม่พึ่งพา python-dotenv) ----
 def _load_env(path=".env"):
@@ -66,6 +84,19 @@ AUTO_RUN = os.getenv("AUTO_RUN", "0") == "1"
 CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
+# ---- Config ฟีเจอร์ใหม่ ----
+# ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
+CONTEXT_FILE = os.getenv("YOUSINI_CONTEXT", "YOUSINI.md")
+# โฟลเดอร์สกิล (relative ต่อ cwd)
+SKILLS_DIR = os.getenv("YOUSINI_SKILLS", "skills")
+# โฟลเดอร์ hooks: ถ้าไม่ระบุ จะหา ./.yousini/hooks แล้ว ~/.yousini/hooks
+HOOKS_DIR = os.getenv("YOUSINI_HOOKS", "")
+# เปิด/ปิด auto-checkpoint (git commit ก่อนแก้ไฟล์)
+CHECKPOINT = os.getenv("YOUSINI_CHECKPOINT", "1") == "1"
+# ที่เก็บ session
+SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS",
+                              str(Path.home() / ".yousini" / "sessions")))
+
 if not API_KEY:
     console.print(Text("Error: ไม่พบ API Key โปรดคัดลอก .env.example เป็น .env แล้วใส่ YOUSINI_API_KEY", style="red"))
     sys.exit(1)
@@ -105,11 +136,11 @@ def _html_to_text(html: str) -> str:
     return html.strip()
 
 
-SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที่ทำงานบนเครื่องของผู้ใช้ แบบเดียวกับ Claude Code
+BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที่ทำงานบนเครื่องของผู้ใช้ แบบเดียวกับ Claude Code
 คุณสามารถรันคำสั่ง shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์บนเครื่อง และเข้าถึงอินเทอร์เน็ต (web_fetch, web_search) ได้
 
 เครื่องมือของคุณ:
-- shell      รันคำสั่ง bash บนเครื่อง (ls, python3, pip, git, สร้างโปรเจกต์ ฯลฯ)
+- shell      รันคำสั่ง bash บนเครื่อง (ls, python3, pip, git, สร้างโปรเจกต์ ฯลฯ) รองรับ run_in_background สำหรับคำสั่งที่รันนาน
 - read_file  อ่านไฟล์ข้อความ
 - write_file สร้าง/เขียนทับไฟล์
 - edit_file  แก้ข้อความในไฟล์ (search & replace)
@@ -120,6 +151,8 @@ SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที่�
 - web_search ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์)
 - set_cwd    เปลี่ยนโฟลเดอร์ทำงาน
 - ask_user   ถามผู้ใช้ เฉพาะเมื่อขาดข้อมูลสำคัญจริงๆ เท่านั้น
+- list_jobs  แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
+- read_job   อ่านผลลัพธ์ของงาน background ตาม job id
 
 หลักการทำงาน (Claude Code style):
 1. วิเคราะห์คำสั่ง → วางแผนสั้นๆ → ใช้เครื่องมือ → ตรวจสอบผล → สรุป
@@ -130,7 +163,278 @@ SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที่�
 6. ห้ามรันคำสั่งอันตราย (rm -rf, dd, shutdown ฯลฯ) โดยไม่ได้รับอนุญาต
 7. เมื่อเห็นผลจากเครื่องมือแล้ว ให้นำไปใช้ต่อ ห้ามเรียก ask_user ถามผลที่ตนเห็นอยู่แล้ว
 8. เมื่องานเสร็จ ให้สรุปสั้นๆ เป็นภาษาไทย พร้อมบอกไฟล์/คำสั่งที่ทำไป
-9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้"""
+9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้
+10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ"""
+
+
+# ---------------------------------------------------------------------------
+# Context (YOUSINI.md) + Skills — บริบทโปรเจกต์ถาวร
+# ---------------------------------------------------------------------------
+def discover_context_files(start_dir: str, filename: str = CONTEXT_FILE):
+    """ค้น YOUSINI.md จาก cwd ขึ้นไปจน root + ไฟล์ global ~/.yousini.md"""
+    found = []
+    try:
+        d = Path(start_dir).resolve()
+    except Exception:
+        d = Path.cwd()
+    for _ in range(12):
+        p = d / filename
+        if p.is_file():
+            found.append(p)
+        parent = d.parent
+        if parent == d:
+            break
+        d = parent
+    g = Path.home() / ".yousini.md"
+    if g.is_file():
+        found.append(g)
+    # ลบซ้ำ (ไฟล์เดียวกันที่เจอจากหลายเส้นทาง)
+    seen, uniq = set(), []
+    for p in found:
+        rp = str(p.resolve())
+        if rp not in seen:
+            seen.add(rp)
+            uniq.append(p)
+    return uniq
+
+
+def load_context_text(start_dir: str, filename: str = CONTEXT_FILE) -> str:
+    files = discover_context_files(start_dir, filename)
+    chunks = []
+    for p in files:
+        try:
+            chunks.append(f"# บริบทจาก {p}\n{p.read_text(encoding='utf-8', errors='replace')}")
+        except Exception:
+            pass
+    return "\n\n".join(chunks)
+
+
+def load_skills(cwd: str, skills_dir: str = SKILLS_DIR):
+    d = Path(cwd) / skills_dir
+    if not d.is_dir():
+        return []
+    out = []
+    for f in sorted(d.glob("*.md")):
+        try:
+            out.append((f.stem, f.read_text(encoding="utf-8", errors="replace")))
+        except Exception:
+            pass
+    return out
+
+
+def build_system_prompt(context_text: str, skills) -> str:
+    parts = [BASE_SYSTEM_PROMPT]
+    if context_text.strip():
+        parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
+    if skills:
+        body = "\n\n---\n\n".join(f"# Skill: {n}\n{c}" for n, c in skills)
+        parts.append("=== Skills ที่มีในโปรเจกต์ ===\n" + body)
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Hooks — pre_tool / post_tool script ตัดสินว่าจะรัน tool ไหม (config ได้)
+# ---------------------------------------------------------------------------
+class Hooks:
+    def __init__(self, hooks_dir: str = HOOKS_DIR, cwd: str = "."):
+        self.cwd = os.path.abspath(cwd)
+        self.dir = self._resolve_dir(hooks_dir)
+
+    def _resolve_dir(self, hooks_dir: str):
+        candidates = []
+        if hooks_dir:
+            candidates.append(Path(hooks_dir).expanduser())
+        candidates.append(Path(self.cwd) / ".yousini" / "hooks")
+        candidates.append(Path.home() / ".yousini" / "hooks")
+        for c in candidates:
+            if c.is_dir():
+                return c
+        return None
+
+    def _resolve_script(self, base: str):
+        if not self.dir:
+            return None
+        # เลือก interpreter ตามที่มีจริงใน PATH: บน Windows ใช้ cmd (.bat/.cmd)
+        # บน Unix ใช้ bash/sh (.sh) — ถ้า interpreter ไม่มี จะข้าม extension นั้น
+        if sys.platform == "win32":
+            order = [(".bat", ["cmd", "/c"]), (".cmd", ["cmd", "/c"]),
+                     (".sh", ["bash"])]
+        else:
+            order = [(".sh", ["bash"]), (".bat", ["cmd", "/c"]),
+                     (".cmd", ["cmd", "/c"])]
+        for ext, runner in order:
+            interp = runner[0]
+            if interp == "bash" and not (shutil.which("bash") or shutil.which("sh")):
+                continue
+            if interp == "cmd" and not shutil.which("cmd"):
+                continue
+            p = self.dir / (base + ext)
+            if p.is_file():
+                return (p, runner)
+        return None
+
+    def has_hooks(self) -> bool:
+        return (self._resolve_script("pre_tool") is not None
+                or self._resolve_script("post_tool") is not None)
+
+    def run_pre(self, name: str, args: dict) -> (bool, str):
+        """คืน (allowed, reason). fail-open ถ้า hook พัง เพื่อไม่ให้ agent ค้าง"""
+        h = self._resolve_script("pre_tool")
+        if not h:
+            return (True, "")
+        p, runner = h
+        payload = json.dumps({"tool": name, "args": args}, ensure_ascii=False)
+        try:
+            env = dict(os.environ, YOUSINI_TOOL=name, YOUSINI_CWD=self.cwd)
+            proc = subprocess.run(runner + [str(p)], input=payload,
+                                  capture_output=True, text=True, env=env,
+                                  cwd=self.cwd, timeout=15)
+            if proc.returncode == 0:
+                return (True, "")
+            reason = (proc.stdout or proc.stderr or "").strip()
+            return (False, reason or f"hook ปฏิเสธ tool '{name}' (exit {proc.returncode})")
+        except Exception as e:
+            console.print(Text(f"⚠ hook error (pre_tool): {e} — อนุญาตต่อ", style="yellow"))
+            return (True, "")
+
+    def run_post(self, name: str, args: dict, result: str):
+        h = self._resolve_script("post_tool")
+        if not h:
+            return
+        p, runner = h
+        payload = json.dumps({"tool": name, "args": args, "result": result},
+                             ensure_ascii=False)
+        try:
+            env = dict(os.environ, YOUSINI_TOOL=name, YOUSINI_CWD=self.cwd)
+            subprocess.run(runner + [str(p)], input=payload,
+                           capture_output=True, text=True, env=env,
+                           cwd=self.cwd, timeout=15)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Session persistence — บันทึก/โหลดบทสนทนา (JSON)
+# ---------------------------------------------------------------------------
+class SessionStore:
+    def __init__(self, base_dir: Path = SESSION_DIR):
+        self.base = Path(base_dir)
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.index_file = self.base / "_index.json"
+
+    def _path(self, name: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        return self.base / f"{safe}.json"
+
+    def save(self, name: str, messages: list, meta: dict) -> str:
+        data = {"name": name, "saved_at": datetime.now().isoformat(),
+                "messages": messages, "meta": meta}
+        self._path(name).write_text(json.dumps(data, ensure_ascii=False),
+                                    encoding="utf-8")
+        self._touch_index(name)
+        return str(self._path(name))
+
+    def load(self, name: str):
+        p = self._path(name)
+        if not p.is_file():
+            return None
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def delete(self, name: str):
+        p = self._path(name)
+        if p.is_file():
+            p.unlink()
+
+    def list(self):
+        out = []
+        for p in sorted(self.base.glob("*.json")):
+            if p.name == "_index.json":
+                continue
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                out.append({"name": d.get("name", p.stem),
+                            "saved_at": d.get("saved_at", "?"),
+                            "turns": len(d.get("messages", []))})
+            except Exception:
+                pass
+        return out
+
+    def _touch_index(self, name: str):
+        idx = {}
+        try:
+            idx = json.loads(self.index_file.read_text(encoding="utf-8"))
+        except Exception:
+            idx = {}
+        idx["last"] = name
+        self.index_file.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+
+    def last(self):
+        try:
+            idx = json.loads(self.index_file.read_text(encoding="utf-8"))
+            return idx.get("last")
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Background jobs — shell รันนานแบบไม่บล็อก
+# ---------------------------------------------------------------------------
+class JobManager:
+    def __init__(self):
+        self.jobs = {}
+        self._seq = 0
+        self._lock = None  # ใช้ threading.Lock ถ้ามี
+
+    def start(self, command: str, cwd: str, timeout: int):
+        import threading
+        self._seq += 1
+        jid = f"job-{self._seq}"
+        buf = io.StringIO()
+        try:
+            proc = subprocess.Popen(["bash", "-c", command], cwd=cwd,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True)
+        except Exception as e:
+            return jid, None, f"Error: {e}"
+        job = {"id": jid, "cmd": command, "proc": proc, "buf": buf,
+               "done": False, "rc": None, "started": datetime.now().isoformat()}
+        self.jobs[jid] = job
+
+        def _pump(j):
+            try:
+                for line in j["proc"].stdout:
+                    j["buf"].write(line)
+            except Exception:
+                pass
+            j["proc"].stdout.close()
+            j["rc"] = j["proc"].wait()
+            j["done"] = True
+
+        t = threading.Thread(target=_pump, args=(job,), daemon=True)
+        t.start()
+        return jid, job, None
+
+    def read(self, jid: str, tail: int = 4000):
+        job = self.jobs.get(jid)
+        if not job:
+            return None, f"ไม่พบงาน {jid}"
+        out = job["buf"].getvalue()
+        if len(out) > tail:
+            out = out[-tail:]
+        status = "เสร็จแล้ว" if job["done"] else "กำลังรัน"
+        header = f"[{jid}] {status} (exit={job['rc']})\nคำสั่ง: {job['cmd']}\n--- ผลลัพธ์ ---\n"
+        return out, header + out
+
+    def summary(self):
+        rows = []
+        for jid, job in self.jobs.items():
+            status = "เสร็จ" if job["done"] else "รันอยู่"
+            nlines = job["buf"].getvalue().count("\n")
+            rows.append(f"{jid}  [{status}]  rc={job['rc']}  {nlines} บรรทัด  | {job['cmd'][:60]}")
+        return "\n".join(rows) if rows else "(ไม่มีงาน background)"
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +457,9 @@ def _lexer_for(p: str) -> str:
 # ---------------------------------------------------------------------------
 class Agent:
     def __init__(self, model=MODEL, cwd=os.getcwd(), interactive=True,
-                 allow_shell=True, allow_write=True):
+                 allow_shell=True, allow_write=True, checkpoint=CHECKPOINT,
+                 hooks_dir=HOOKS_DIR, context_file=CONTEXT_FILE,
+                 skills_dir=SKILLS_DIR, jobs=None):
         self.model = model
         self.cwd = os.path.abspath(cwd)
         self.auto_run = AUTO_RUN
@@ -162,7 +468,31 @@ class Agent:
         self.interactive = interactive
         self.allow_shell = allow_shell   # ปิดได้เพื่อเซิร์ฟเวอร์แบบ read-only
         self.allow_write = allow_write
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.checkpoint_enabled = checkpoint
+        self._did_checkpoint = False
+        self.jobs = jobs or JobManager()
+        # บริบท + สกิล
+        self.context_file = context_file
+        self.skills_dir = skills_dir
+        self.context_text = load_context_text(self.cwd, self.context_file)
+        self.skills = load_skills(self.cwd, self.skills_dir)
+        self.hooks = Hooks(hooks_dir, self.cwd)
+        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        self.messages = [{"role": "system", "content": self.system_prompt}]
+
+    def refresh_context(self):
+        """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
+        self.context_text = load_context_text(self.cwd, self.context_file)
+        self.skills = load_skills(self.cwd, self.skills_dir)
+        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        # แทนที่ system message แรก
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0]["content"] = self.system_prompt
+        else:
+            self.messages.insert(0, {"role": "system", "content": self.system_prompt})
+
+    def begin_turn(self):
+        self._did_checkpoint = False
 
     # ---- trimming: ตัดที่ user-boundary เท่านั้น ไม่ให้เหลือ tool-result ลอยๆ ----
     def _trim(self, max_msgs=40):
@@ -177,8 +507,40 @@ class Agent:
             cuts = [i - drop for i in cuts[1:]]
         self.messages = [sys0] + conv
 
+    # ---- Checkpoint (auto git commit ก่อนแก้ไฟล์) ----
+    def checkpoint(self, reason: str = "auto") -> str:
+        if not self.checkpoint_enabled:
+            return ""
+        if self._did_checkpoint:
+            return ""
+        if not self.allow_write:
+            return ""
+        git_dir = Path(self.cwd) / ".git"
+        if not git_dir.is_dir():
+            return ""
+        try:
+            subprocess.run(["git", "add", "-A"], cwd=self.cwd,
+                           capture_output=True, text=True, timeout=20)
+            r = subprocess.run(["git", "status", "--porcelain"], cwd=self.cwd,
+                               capture_output=True, text=True, timeout=20)
+            msg = f"[Yousini checkpoint] {reason} {datetime.now().isoformat(timespec='seconds')}"
+            if not r.stdout.strip():
+                # ไม่มีอะไรค้าง → commit ว่างเพื่อทำเครื่องหมายจุดเริ่มต้น (tree = สถานะก่อนแก้)
+                c = subprocess.run(["git", "commit", "--allow-empty", "-m", msg],
+                                   cwd=self.cwd, capture_output=True, text=True, timeout=30)
+            else:
+                c = subprocess.run(["git", "commit", "-m", msg], cwd=self.cwd,
+                                   capture_output=True, text=True, timeout=30)
+            if c.returncode == 0:
+                self._did_checkpoint = True
+                return f"checkpoint: {msg}"
+        except Exception as e:
+            return f"(checkpoint ล้มเหลว: {e})"
+        return ""
+
     # ---- Shell ----
-    def shell(self, command: str, timeout: int = None) -> str:
+    def shell(self, command: str, timeout: int = None,
+              run_in_background: bool = False) -> str:
         if not self.allow_shell:
             return "Error: shell ถูกปิดในโหมดนี้ (read-only server)"
         dangerous = is_dangerous(command)
@@ -192,9 +554,16 @@ class Agent:
             console.print(Text(f"Shell: {command}", style="cyan"))
             ans = input("  รัน? [y/N/e=แก้ไข] ").strip().lower()
             if ans in ("e", "edit"):
-                return self.shell(input("  พิมพ์คำสั่งใหม่: ").strip(), timeout)
+                return self.shell(input("  พิมพ์คำสั่งใหม่: ").strip(), timeout, run_in_background)
             if ans not in ("y", "yes", "1"):
                 return "ปฏิเสธโดยผู้ใช้"
+        if run_in_background:
+            t = timeout or SHELL_TIMEOUT
+            jid, job, err = self.jobs.start(command, self.cwd, t)
+            if err:
+                return err
+            console.print(Text(f"↻ เริ่มงาน background {jid}: {command}", style="cyan"))
+            return f"เริ่มงาน background {jid} (รันไม่บล็อก) ใช้ read_job(job_id='{jid}') เพื่อดูผล"
         try:
             t = timeout or SHELL_TIMEOUT
             proc = subprocess.Popen(["bash", "-c", command], cwd=self.cwd,
@@ -255,6 +624,7 @@ class Agent:
                 old = ""
         if not self.allow_write:
             return "Error: การเขียนไฟล์ถูกปิดในโหมดนี้ (read-only server)"
+        self.checkpoint(f"ก่อนเขียน {os.path.basename(path)}")
         self._show_diff(path, old, content)
         if self.interactive and self.confirm_files and os.path.exists(fp):
             if input("   ยืนยันเขียนทับ? [y/N] ").strip().lower() not in ("y", "yes", "1"):
@@ -279,6 +649,7 @@ class Agent:
             return "Error: ไม่พบ old_string ในไฟล์"
         if not self.allow_write:
             return "Error: การแก้ไฟล์ถูกปิดในโหมดนี้ (read-only server)"
+        self.checkpoint(f"ก่อนแก้ {os.path.basename(path)}")
         new = old.replace(old_string, new_string)
         self._show_diff(path, old, new)
         if self.interactive and self.confirm_files:
@@ -359,34 +730,15 @@ class Agent:
             return f"Error: web_fetch ไม่ได้: {e}"
 
     def web_search(self, query: str, max_results: int = 5) -> str:
-        try:
-            q = urllib.parse.quote(query)
-            req = urllib.request.Request(
-                f"https://html.duckduckgo.com/html/?q={q}",
-                headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=25) as r:
-                html = r.read().decode("utf-8", errors="replace")
-            titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
-            links = re.findall(r'class="result__a"[^>]*href="([^"]+)"', html)
-            snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)
-            out = []
-            for i in range(min(max_results, len(titles))):
-                t = _strip_tags(titles[i]).strip()
-                l = links[i] if i < len(links) else ""
-                s = _strip_tags(snippets[i]).strip() if i < len(snippets) else ""
-                out.append(f"{i+1}. {t}\n   {l}\n   {s}")
-            res = "\n".join(out) or "ไม่พบผลลัพธ์"
-            console.print(Panel(Text(res, style="dim"),
-                                title=f"ค้นหา: {query}", border_style="blue"))
-            return res
-        except Exception as e:
-            return f"Error: web_search ไม่ได้: {e}"
+        return web_search_robust(query, max_results)
 
     def set_cwd(self, path: str) -> str:
         fp = self._resolve(path)
         if not os.path.isdir(fp):
             return f"Error: ไม่พบโฟลเดอร์: {fp}"
         self.cwd = os.path.abspath(fp)
+        self.hooks.cwd = self.cwd
+        self.refresh_context()
         return f"เปลี่ยนโฟลเดอร์เป็น: {self.cwd}"
 
     def ask_user(self, question: str) -> str:
@@ -398,9 +750,76 @@ class Agent:
         except EOFError:
             return "(ไม่มีคำตอบ — โหมดไม่โต้ตอบ)"
 
+    def list_jobs(self) -> str:
+        return self.jobs.summary()
+
+    def read_job(self, job_id: str, tail: int = 4000) -> str:
+        _, text = self.jobs.read(job_id, tail)
+        return text
+
+
+# ---------------------------------------------------------------------------
+# web_search แบบทนทาน: ลองหลาย endpoint + fallback
+# ---------------------------------------------------------------------------
+def web_search_robust(query: str, max_results: int = 5) -> str:
+    q = urllib.parse.quote(query)
+    agents = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+              "Mozilla/5.0 (X11; Linux x86_64)"]
+    endpoints = [
+        ("html", f"https://html.duckduckgo.com/html/?q={q}"),
+        ("lite", f"https://lite.duckduckgo.com/lite/?q={q}"),
+        ("bing", f"https://www.bing.com/search?q={q}&setlang=th"),
+    ]
+    last_err = ""
+    for kind, url in endpoints:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": agents[0]})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                html = r.read().decode("utf-8", errors="replace")
+            if kind in ("html", "lite"):
+                titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
+                links = re.findall(r'class="result__a"[^>]*href="([^"]+)"', html)
+                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)
+                if not titles:
+                    # fallback pattern สำหรับ lite.ddg
+                    titles = re.findall(r'<a[^>]+class="result-link"[^>]*>(.*?)</a>', html, re.S)
+                    links = re.findall(r'<a[^>]+class="result-link"[^>]+href="([^"]+)"', html)
+            else:  # bing
+                titles = re.findall(r'<li class="b_algo"[^>]*>.*?<h2>.*?<a[^>]*>(.*?)</a>',
+                                    html, re.S)
+                links = re.findall(r'<li class="b_algo"[^>]*>.*?<h2>.*?<a[^>]+href="([^"]+)"',
+                                   html, re.S)
+                snippets = re.findall(r'<li class="b_algo"[^>]*>.*?<p[^>]*>(.*?)</p>',
+                                      html, re.S)
+            out = []
+            for i in range(min(max_results, len(titles))):
+                t = _strip_tags(titles[i]).strip()
+                l = links[i] if i < len(links) else ""
+                s = _strip_tags(snippets[i]).strip() if i < len(snippets) else ""
+                if not t:
+                    continue
+                # ลิงก์ DDG มักเป็น redirect 302 → พยายามถอด
+                if l.startswith("//duckduckgo.com/l/?uddg="):
+                    try:
+                        l = urllib.parse.unquote(l.split("uddg=", 1)[1].split("&", 1)[0])
+                    except Exception:
+                        pass
+                out.append(f"{i+1}. {t}\n   {l}\n   {s}")
+            if out:
+                res = "\n".join(out)
+                console.print(Panel(Text(res, style="dim"),
+                                    title=f"ค้นหา: {query}", border_style="blue"))
+                return res
+            last_err = f"(parser ไม่เจอผลจาก {kind})"
+        except Exception as e:
+            last_err = f"{kind}: {e}"
+            continue
+    return f"Error: web_search ไม่ได้จากทุกแหล่ง ({last_err})"
+
 
 TOOLS = [
-    {"type": "function", "function": {"name": "shell", "description": "รันคำสั่ง bash บนเครื่อง (ls, python3, pip install, git, สร้างโปรเจกต์)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "shell", "description": "รันคำสั่ง bash บนเครื่อง (ls, python3, pip install, git, สร้างโปรเจกต์). เพิ่ม run_in_background=true สำหรับคำสั่งที่รันนาน แล้วอ่านผลด้วย read_job", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}, "run_in_background": {"type": "boolean"}}, "required": ["command"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "อ่านไฟล์ข้อความ (มี syntax highlighting)", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "write_file", "description": "สร้าง/เขียนทับไฟล์", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "edit_file", "description": "แทนที่ old_string ด้วย new_string ในไฟล์", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}}},
@@ -411,6 +830,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "web_search", "description": "ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์) คืนรายการผลลัพธ์", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้นหา"}, "max_results": {"type": "integer", "description": "จำนวนผลลัพธ์ (ค่าเริ่มต้น 5)"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "set_cwd", "description": "เปลี่ยนโฟลเดอร์ทำงาน", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "ask_user", "description": "ถามผู้ใช้เฉพาะเมื่อขาดข้อมูลสำคัญจริงๆ เท่านั้น", "parameters": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}}},
+    {"type": "function", "function": {"name": "list_jobs", "description": "แสดงงาน shell แบบ background ที่กำลังรันหรือเสร็จแล้ว", "parameters": {"type": "object", "properties": {}}, "required": []}},
+    {"type": "function", "function": {"name": "read_job", "description": "อ่านผลลัพธ์ของงาน background ตาม job id (ได้จาก shell ที่รันแบบ background)", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}, "tail": {"type": "integer", "description": "จำกัดตัวอักษรท้ายสุด (ค่าเริ่มต้น 4000)"}}, "required": ["job_id"]}}},
 ]
 
 IMPL = {
@@ -419,16 +840,25 @@ IMPL = {
     "list_dir": lambda a, k: k.list_dir(**a), "glob": lambda a, k: k.glob(**a),
     "grep": lambda a, k: k.grep(**a), "web_fetch": lambda a, k: k.web_fetch(**a),
     "web_search": lambda a, k: k.web_search(**a), "set_cwd": lambda a, k: k.set_cwd(**a),
-    "ask_user": lambda a, k: k.ask_user(**a),
+    "ask_user": lambda a, k: k.ask_user(**a), "list_jobs": lambda a, k: k.list_jobs(),
+    "read_job": lambda a, k: k.read_job(**a),
 }
 
 
 def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
+    # ---- Hook: pre_tool ----
+    allowed, reason = agent.hooks.run_pre(name, args)
+    if not allowed:
+        console.print(Text(f"⏹ hook ปฏิเสธ {name}: {reason}", style="red"))
+        agent.messages.append({"role": "tool", "tool_call_id": tc_id,
+                               "content": f"Blocked by hook: {reason}"})
+        return
     shown = args.get("command", "") if name == "shell" else args
     if not isinstance(shown, str):
         shown = json.dumps(shown, ensure_ascii=False)
     console.print(Text(f"⏺ {name}({shown})", style="bold cyan"))
     result = IMPL[name](args, agent)
+    agent.hooks.run_post(name, args, str(result))
     console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style="dim"))
     agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
 
@@ -446,6 +876,7 @@ def _fallback_turn(agent: Agent, err):
 
 
 def chat_turn(agent: Agent, user_text: str):
+    agent.begin_turn()
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
     tool_seen = False
@@ -523,10 +954,10 @@ def chat_turn(agent: Agent, user_text: str):
 
 # ---------------------------------------------------------------------------
 # run_turn_events — เวอร์ชัน generator สำหรับ server/remote (yield เป็น event)
-# ใช้ agent.messages ร่วมกัน (ความจำข้าม turn) แต่ไม่พิมพ์คำตอบออกจอ
 # event: {"type": "token"|"tool"|"tool_result"|"final"|"error", ...}
 # ---------------------------------------------------------------------------
 def run_turn_events(agent: Agent, user_text: str):
+    agent.begin_turn()
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
     while True:
@@ -580,11 +1011,22 @@ def run_turn_events(agent: Agent, user_text: str):
                     args = {}
                 if not isinstance(args, dict):
                     args = {}
+                # ---- Hook: pre_tool (สำหรับ server/remote ด้วย) ----
+                allowed, reason = agent.hooks.run_pre(t["name"], args)
                 shown = args.get("command", "") if t["name"] == "shell" else args
                 if not isinstance(shown, str):
                     shown = json.dumps(shown, ensure_ascii=False)
+                if not allowed:
+                    yield {"type": "tool", "name": t["name"], "args": shown, "blocked": True}
+                    agent.messages.append({"role": "tool",
+                                           "tool_call_id": t["id"],
+                                           "content": f"Blocked by hook: {reason}"})
+                    yield {"type": "tool_result", "name": t["name"],
+                           "result": _truncate(f"Blocked by hook: {reason}", 1500)}
+                    continue
                 yield {"type": "tool", "name": t["name"], "args": shown}
                 result = IMPL[t["name"]](args, agent)
+                agent.hooks.run_post(t["name"], args, str(result))
                 agent.messages.append({"role": "tool",
                                        "tool_call_id": t["id"], "content": str(result)})
                 yield {"type": "tool_result", "name": t["name"],
@@ -602,6 +1044,8 @@ HIST_FILE = Path.home() / ".yousini_history"
 
 
 def _setup_readline():
+    if readline is None:
+        return
     try:
         readline.read_history_file(HIST_FILE)
     except FileNotFoundError:
@@ -647,7 +1091,13 @@ def _print_banner(agent: Agent):
     txt.append("เครื่อง + ออนไลน์", style="green")
     txt.append("   ·   shell ", style="dim")
     txt.append("ถามก่อน" if not agent.auto_run else "รันทันที", style="yellow")
-    txt.append("\n\n  พิมพ์งานได้เลย  ·  ", style="dim")
+    ctx = "เปิด" if agent.context_text.strip() else "ปิด"
+    sk = len(agent.skills)
+    hk = "มี" if agent.hooks.has_hooks() else "ไม่มี"
+    txt.append(f"\n  บริบท(YOUSINI.md) ", style="dim"); txt.append(ctx + "\n", style="cyan")
+    txt.append("  สกิล      ", style="dim"); txt.append(f"{sk} ตัว\n", style="cyan")
+    txt.append("  hooks     ", style="dim"); txt.append(hk + "\n", style="cyan")
+    txt.append("\n  พิมพ์งานได้เลย  ·  ", style="dim")
     txt.append("/help", style="bold cyan")
     txt.append(" ดูคำสั่งทั้งหมด  ·  ", style="dim")
     txt.append("yousini serve", style="bold cyan")
@@ -666,6 +1116,15 @@ def _print_help():
         ("/model <ชื่อ>", "เปลี่ยนโมเดล เช่น /model openai/gpt-oss-120b"),
         ("/cwd <โฟลเดอร์>", "เปลี่ยนโฟลเดอร์ทำงาน"),
         ("/approve on|off", "รัน shell อัตโนมัติโดยไม่ถาม"),
+        ("/reload", "โหลด YOUSINI.md + skills ใหม่"),
+        ("/skills", "แสดงสกิลที่โหลดอยู่"),
+        ("/hooks", "แสดงสถานะ hooks"),
+        ("/save [ชื่อ]", "บันทึกบทสนทนาลงดิสก์"),
+        ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
+        ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
+        ("/jobs", "แสดงงาน shell background"),
+        ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
+        ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -673,6 +1132,8 @@ def _print_help():
         ("yousini serve --host 0.0.0.0 --token รหัส", "เปิดออนไลน์ (มี token)"),
         ("yousini serve --safe", "เปิดแบบอ่านอย่างเดียว (ปิด shell/เขียนไฟล์)"),
         ("yousini connect <url> [--token รหัส]", "คุยกับ Yousini อีกเครื่องผ่านเน็ต"),
+        ("yousini mcp [--allow-exec]", "เปิดเป็น MCP server (stdio)"),
+        ("yousini resume", "โหลด session ล่าสุดแล้วเข้าสู่แชท"),
     ]
     t = Text()
     t.append("  คำสั่งใน REPL\n", style="bold magenta")
@@ -705,9 +1166,34 @@ def _print_history(agent: Agent):
     console.print(Panel(t, title=f"ประวัติ ({len(agent.messages)} ข้อความ)", border_style="magenta"))
 
 
+def _print_skills(agent: Agent):
+    if not agent.skills:
+        console.print(Text("ไม่มีสกิล (โฟลเดอร์ skills/ ว่างหรือไม่มี)", style="yellow"))
+        return
+    t = Text()
+    for n, c in agent.skills:
+        t.append(f"• {n}", style="bold cyan")
+        t.append(f"  ({len(c)} ตัวอักษร)\n", style="dim")
+    console.print(Panel(t, title=f"สกิลที่โหลด ({len(agent.skills)})", border_style="magenta"))
+
+
+def _print_hooks(agent: Agent):
+    d = agent.hooks.dir
+    if not d:
+        console.print(Text("ไม่พบโฟลเดอร์ hooks (วาง pre_tool.sh/post_tool.sh ใน ./.yousini/hooks หรือ ~/.yousini/hooks)", style="yellow"))
+        return
+    pre = agent.hooks._resolve_script("pre_tool")
+    post = agent.hooks._resolve_script("post_tool")
+    t = Text()
+    t.append(f"โฟลเดอร์: {d}\n", style="dim")
+    t.append("pre_tool:  ", style="bold"); t.append(str(pre[0]) if pre else "ไม่มี\n", style="green" if pre else "dim")
+    t.append("post_tool: ", style="bold"); t.append(str(post[0]) if post else "ไม่มี\n", style="green" if post else "dim")
+    console.print(Panel(t, title="Hooks", border_style="magenta"))
+
+
 # ---------------------------------------------------------------------------
 # โหมด SERVER: yousini serve  → เปิดเป็นบริการ (เว็บ UI + API สตรีม SSE)
-# เชื่อมต่อได้ทั้งในเครื่อง (localhost) และออนไลน์ (0.0.0.0 + token)
+# session ถูกบันทึกลงดิสก์ข้าม restart ด้วย
 # ---------------------------------------------------------------------------
 def _load_webui():
     here = Path(__file__).resolve().parent
@@ -727,15 +1213,31 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
     sessions = {}          # sid -> Agent
     locks = {}             # sid -> Lock (กันรันทับกันในเซสชันเดียว)
     reg_lock = threading.Lock()
+    store = SessionStore(SESSION_DIR)
 
     def get_agent(sid):
         with reg_lock:
             if sid not in sessions:
-                sessions[sid] = Agent(interactive=False,
-                                      allow_shell=(allow_shell and not safe),
-                                      allow_write=(allow_write and not safe))
+                ag = Agent(interactive=False,
+                           allow_shell=(allow_shell and not safe),
+                           allow_write=(allow_write and not safe))
+                # โหลด session เดิมจากดิสก์ (ถ้ามี) → บริบทข้าม restart
+                saved = store.load(f"serve-{sid}")
+                if saved:
+                    try:
+                        ag.messages = saved.get("messages", ag.messages)
+                    except Exception:
+                        pass
+                sessions[sid] = ag
                 locks[sid] = threading.Lock()
             return sessions[sid], locks[sid]
+
+    def persist(sid, agent):
+        try:
+            store.save(f"serve-{sid}", agent.messages,
+                       {"model": agent.model, "cwd": agent.cwd})
+        except Exception:
+            pass
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -812,6 +1314,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 try:
                     for ev in run_turn_events(agent, message):
                         emit(ev)
+                    persist(sid, agent)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 except Exception as e:
@@ -846,6 +1349,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
         t.append("ไม่มี token ", style="yellow")
     t.append("| shell " + ("ปิด" if safe or not allow_shell else "เปิด"), style="dim")
     t.append(" | เขียนไฟล์ " + ("ปิด" if safe or not allow_write else "เปิด"), style="dim")
+    t.append(" | session ถาวร (บันทึกลงดิสก์)", style="dim")
     if online and not token:
         t.append("\n\nคำเตือน: เปิดออนไลน์โดยไม่มี token ใครก็สั่งเครื่องคุณได้! ใช้ --token",
                  style="bold red")
@@ -861,7 +1365,6 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
 
 # ---------------------------------------------------------------------------
 # โหมด CLIENT: yousini connect <url>  → คุยกับ Yousini อีกเครื่อง/บริการผ่านเครือข่าย
-# ทำให้ CLI สองเครื่อง "คุยกัน" ได้ (ในเครื่อง หรือ ออนไลน์)
 # ---------------------------------------------------------------------------
 def connect_main(url, token=""):
     base = url.rstrip("/")
@@ -919,7 +1422,8 @@ def connect_main(url, token=""):
                             acc.append(ev["text"])
                             console.print(ev["text"], end="", style="green")
                         elif ev["type"] == "tool":
-                            console.print(Text(f"\n⏺ {ev['name']}({ev['args']})",
+                            tag = " (hook ปฏิเสธ)" if ev.get("blocked") else ""
+                            console.print(Text(f"\n⏺ {ev['name']}({ev['args']}){tag}",
                                           style="bold cyan"))
                         elif ev["type"] == "tool_result":
                             console.print(Text(f"⎿ {ev['result']}", style="dim"))
@@ -939,6 +1443,87 @@ def connect_main(url, token=""):
             console.print(Text(f"Error: {e}", style="red"))
 
 
+# ---------------------------------------------------------------------------
+# โหมด MCP SERVER: yousini mcp  → ครอบ tools เป็น MCP server (stdio)
+# ให้ agent ภายนอก (Claude Code, อื่นๆ) เรียก tools 9+ ตัวได้ผ่านโปรโตคอลมาตรฐาน
+# ---------------------------------------------------------------------------
+def _tools_to_mcp():
+    out = []
+    for t in TOOLS:
+        f = t["function"]
+        out.append({
+            "name": f["name"],
+            "description": f["description"],
+            "inputSchema": f["parameters"],
+        })
+    return out
+
+
+def mcp_main(allow_exec: bool = False):
+    """MCP server แบบ stdio JSON-RPC 2.0 (newline-delimited)
+    สำคัญ: stdout ต้องสะอาดสำหรับ JSON-RPC เท่านั้น จึงเปลี่ยน console ไปเขียน stderr"""
+    global console
+    console = Console(file=sys.stderr, force_terminal=False, width=120)
+    agent = Agent(interactive=False,
+                  allow_shell=allow_exec,
+                  allow_write=allow_exec)
+    if not allow_exec:
+        agent.auto_run = False
+    sys.stderr.write("Yousini MCP server started (stdio). allow_exec=%s\n" % allow_exec)
+    sys.stderr.flush()
+
+    def send(obj):
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+    def call_tool(name, arguments):
+        if name in ("shell", "write_file", "edit_file") and not allow_exec:
+            return {"content": [{"type": "text",
+                    "text": f"Error: tool '{name}' ถูกปิดในโหมด MCP ปลอดภัย (รันด้วย --allow-exec)"}],
+                    "isError": True}
+        try:
+            args = arguments or {}
+            result = IMPL[name](args, agent)
+        except Exception as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True}
+        return {"content": [{"type": "text", "text": str(result)}]}
+
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            continue
+        method = msg.get("method")
+        mid = msg.get("id")
+        params = msg.get("params", {}) or {}
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "Yousini", "version": "1.0"}}})
+        elif method == "notifications/initialized":
+            pass
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": _tools_to_mcp()}})
+        elif method == "tools/call":
+            name = params.get("name")
+            args = params.get("arguments", {})
+            res = call_tool(name, args)
+            send({"jsonrpc": "2.0", "id": mid, "result": res})
+        elif method == "ping":
+            send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        else:
+            if mid is not None:
+                send({"jsonrpc": "2.0", "id": mid,
+                      "error": {"code": -32601, "message": f"method ไม่รู้จัก: {method}"}})
+
+
+# ---------------------------------------------------------------------------
+# Flags / helpers
+# ---------------------------------------------------------------------------
 def _parse_flags(argv):
     """แปลง --key value / --flag เป็น dict ง่ายๆ"""
     opts, i = {}, 0
@@ -953,6 +1538,115 @@ def _parse_flags(argv):
         else:
             opts.setdefault("_", []).append(a); i += 1
     return opts
+
+
+def _default_session_name(cwd: str) -> str:
+    h = abs(hash(os.path.abspath(cwd)))
+    return f"cli-{os.path.basename(os.path.abspath(cwd))}-{h % 100000}"
+
+
+def _run_repl(agent: Agent):
+    _setup_readline()
+    _print_banner(agent)
+    store = SessionStore(SESSION_DIR)
+    while True:
+        try:
+            user_input = input("❯ ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print(Text("\nจบการทำงาน", style="dim")); break
+        if not user_input:
+            continue
+        low = user_input.lower()
+        if low in ("/exit", "/quit"):
+            console.print(Text("จบการทำงาน", style="dim")); break
+        if low == "/help":
+            _print_help(); continue
+        if low == "/clear":
+            agent.messages = [{"role": "system", "content": agent.system_prompt}]
+            console.print(Text("ล้างประวัติแล้ว", style="yellow")); continue
+        if low == "/history":
+            _print_history(agent); continue
+        if low == "/skills":
+            _print_skills(agent); continue
+        if low == "/hooks":
+            _print_hooks(agent); continue
+        if low == "/jobs":
+            console.print(Panel(agent.jobs.summary(), title="Background jobs", border_style="magenta")); continue
+        if low == "/reload":
+            agent.refresh_context()
+            console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
+        if low.startswith("/model "):
+            agent.model = user_input[7:].strip()
+            console.print(Text(f"โมเดล: {agent.model}", style="green")); continue
+        if low.startswith("/cwd "):
+            console.print(Text(agent.set_cwd(user_input[5:].strip()), style="yellow")); continue
+        if low.startswith("/approve "):
+            agent.auto_run = user_input[9:].strip().lower() in ("on", "1", "true")
+            console.print(Text(f"รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
+        if low == "/checkpoint":
+            r = agent.checkpoint("ด้วยมือ /checkpoint")
+            console.print(Text(r or "(ไม่มีอะไรให้เก็บ หรือไม่ได้อยู่ใน git repo)", style="yellow")); continue
+        if low == "/rollback":
+            r = _rollback_to_last_checkpoint(agent)
+            console.print(Text(r, style="yellow")); continue
+        if low == "/sessions":
+            rows = store.list()
+            if not rows:
+                console.print(Text("ยังไม่มี session ที่บันทึก", style="yellow")); continue
+            t = Text()
+            for s in rows:
+                t.append(f"• {s['name']}", style="bold cyan")
+                t.append(f"   ({s['turns']} ข้อความ, {s['saved_at']})\n", style="dim")
+            console.print(Panel(t, title="Sessions ที่บันทึก", border_style="magenta")); continue
+        if low.startswith("/save"):
+            name = user_input[5:].strip() or _default_session_name(agent.cwd)
+            p = store.save(name, agent.messages, {"model": agent.model, "cwd": agent.cwd})
+            console.print(Text(f"บันทึก session '{name}' แล้ว:\n{p}", style="green")); continue
+        if low.startswith("/load"):
+            name = user_input[5:].strip() or store.last() or _default_session_name(agent.cwd)
+            d = store.load(name)
+            if not d:
+                console.print(Text(f"ไม่พบ session '{name}'", style="red")); continue
+            agent.messages = d.get("messages", agent.messages)
+            if d.get("meta", {}).get("model"):
+                agent.model = d["meta"]["model"]
+            console.print(Text(f"โหลด session '{name}' ({len(agent.messages)} ข้อความ)", style="green")); continue
+        chat_turn(agent, user_input)
+
+
+def _rollback_to_last_checkpoint(agent: Agent) -> str:
+    git_dir = Path(agent.cwd) / ".git"
+    if not git_dir.is_dir():
+        return "ไม่ได้อยู่ใน git repository"
+    try:
+        r = subprocess.run(["git", "log", "--oneline", "-F", "--grep",
+                           "[Yousini checkpoint]", "-n", "1"],
+                          cwd=agent.cwd, capture_output=True, text=True, timeout=20)
+        line = r.stdout.strip().split("\n")[0]
+        if not line:
+            return "ไม่พบ checkpoint ใดๆ (ยังไม่เคย auto-commit)"
+        sha = line.split(" ", 1)[0]
+        # ย้าย working tree กลับไปยังจุด checkpoint
+        res = subprocess.run(["git", "reset", "--hard", sha], cwd=agent.cwd,
+                             capture_output=True, text=True, timeout=30)
+        if res.returncode == 0:
+            return f"rollback สำเร็จ → คืนสถานะที่ checkpoint {sha}"
+        return f"rollback ไม่สำเร็จ: {res.stderr}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def resume_main():
+    store = SessionStore(SESSION_DIR)
+    name = store.last() or _default_session_name(os.getcwd())
+    d = store.load(name)
+    agent = Agent()
+    if d:
+        agent.messages = d.get("messages", agent.messages)
+        if d.get("meta", {}).get("model"):
+            agent.model = d["meta"]["model"]
+        console.print(Text(f"โหลด session ล่าสุด '{name}' ({len(agent.messages)} ข้อความ)", style="green"))
+    _run_repl(agent)
 
 
 def main():
@@ -982,38 +1676,23 @@ def main():
                      token=o.get("token", "") if isinstance(o.get("token"), str) else "")
         return
 
+    # ---- subcommand: mcp ----
+    if argv and argv[0] == "mcp":
+        o = _parse_flags(argv[1:])
+        mcp_main(allow_exec=bool(o.get("allow-exec")))
+        return
+
+    # ---- subcommand: resume ----
+    if argv and argv[0] == "resume":
+        resume_main()
+        return
+
     agent = Agent()
     if argv:
         chat_turn(agent, " ".join(argv))
         return
 
-    _setup_readline()
-    _print_banner(agent)
-    while True:
-        try:
-            user_input = input("❯ ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print(Text("\nจบการทำงาน", style="dim")); break
-        if not user_input:
-            continue
-        if user_input.lower() in ("/exit", "/quit"):
-            console.print(Text("จบการทำงาน", style="dim")); break
-        if user_input.lower() == "/help":
-            _print_help(); continue
-        if user_input.lower() == "/clear":
-            agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            console.print(Text("ล้างประวัติแล้ว", style="yellow")); continue
-        if user_input.lower() == "/history":
-            _print_history(agent); continue
-        if user_input.lower().startswith("/model "):
-            agent.model = user_input[7:].strip()
-            console.print(Text(f"โมเดล: {agent.model}", style="green")); continue
-        if user_input.lower().startswith("/cwd "):
-            console.print(Text(agent.set_cwd(user_input[5:].strip()), style="yellow")); continue
-        if user_input.lower().startswith("/approve "):
-            agent.auto_run = user_input[9:].strip().lower() in ("on", "1", "true")
-            console.print(Text(f"รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
-        chat_turn(agent, user_input)
+    _run_repl(agent)
 
 
 if __name__ == "__main__":
