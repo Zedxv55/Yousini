@@ -110,6 +110,12 @@ CHECKPOINT = os.getenv("YOUSINI_CHECKPOINT", "1") == "1"
 SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS",
                               str(Path.home() / ".yousini" / "sessions")))
 
+# Web search provider (ทางเลือกเสริม: ใช้ API key ของผู้ให้บริการค้นหาจริง แทน scraping)
+# ตั้ง YOUSINI_SEARCH_PROVIDER=brave|serpapi|tavily แล้วใส่ key ผ่านตัวแปรที่สอดคล้อง
+SEARCH_PROVIDER = (os.getenv("YOUSINI_SEARCH_PROVIDER") or "").lower()
+SEARCH_API_KEY = (os.getenv("YOUSINI_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
+                  or os.getenv("SERPAPI_KEY") or os.getenv("TAVILY_API_KEY", ""))
+
 if not API_KEY:
     console.print(Text("Error: ไม่พบ API Key โปรดคัดลอก .env.example เป็น .env แล้วใส่ YOUSINI_API_KEY", style="red"))
     sys.exit(1)
@@ -174,6 +180,9 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - ask_user   ถามผู้ใช้ เฉพาะเมื่อขาดข้อมูลสำคัญจริงๆ เท่านั้น
 - list_jobs  แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
 - read_job   อ่านผลลัพธ์ของงาน background ตาม job id
+- load_skill โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) — เรียกเมื่องานเกี่ยวข้องกับสกิลนั้น
+- run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
+- spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
 
 หลักการทำงาน (Claude Code style):
 1. วิเคราะห์คำสั่ง → วางแผนสั้นๆ → ใช้เครื่องมือ → ตรวจสอบผล → สรุป
@@ -187,6 +196,16 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้
 10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
 11. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
+
+
+SUBAGENT_SYSTEM_PROMPT = """คุณคือ Yousini Sub-Agent — เอเจนต์ย่อยที่ทำงานแยกบริบทเพื่อทำงานเฉพาะส่วนหนึ่ง
+คุณมีเครื่องมือชุดเดียวกับเอเจนต์หลัก (shell อ่านได้, เขียนไฟล์ปิดอยู่, อ่าน/ค้นหา/เว็บ/วิเคราะห์ได้)
+กฎการทำงาน:
+1. รับคำสั่งงาน → วางแผนสั้นๆ → ใช้เครื่องมือ → ตรวจสอบผล → สรุป
+2. คืนคำตอบเป็นภาษาไทยแบบกระชับ (สรุปผลลัพธ์สำคัญ + ไฟล์/คำสั่งที่เกี่ยวข้อง) ห้ามยืดเยื้อ
+3. ห้ามเรียก spawn_subagent ซ้ำ (ห้ามสร้างเอเจนต์ย่อยซ้อนกัน)
+4. ห้ามคาดเดา ให้ใช้เครื่องมือตรวจสอบเสมอ
+5. งานเสร็จให้สรุปสั้นๆ แล้วหยุด (ไม่ต้องถามผู้ใช้)"""
 
 
 # ---------------------------------------------------------------------------
@@ -231,17 +250,42 @@ def load_context_text(start_dir: str, filename: str = CONTEXT_FILE) -> str:
     return "\n\n".join(chunks)
 
 
-def load_skills(cwd: str, skills_dir: str = SKILLS_DIR):
+def _skill_desc(text: str) -> str:
+    """ดึงคำอธิบายสกิลสั้นๆ จากบรรทัดแรกที่มีความหมาย (หัวข้อ # หรือย่อหน้าแรก)"""
+    for ln in (l.strip() for l in text.splitlines()):
+        if not ln:
+            continue
+        if ln.startswith("#"):
+            return ln.lstrip("#").strip()[:160]
+        return ln[:160]
+    return ""
+
+
+def load_skill_index(cwd: str, skills_dir: str = SKILLS_DIR):
+    """คืนรายการสกิลแบบย่อ (name, desc) โดยไม่โหลดเนื้อหาเต็ม — ป้องกัน context bloat เมื่อสกิลเยอะ"""
     d = Path(cwd) / skills_dir
     if not d.is_dir():
         return []
     out = []
     for f in sorted(d.glob("*.md")):
         try:
-            out.append((f.stem, f.read_text(encoding="utf-8", errors="replace")))
+            text = f.read_text(encoding="utf-8", errors="replace")
         except Exception:
-            pass
+            continue
+        out.append((f.stem, _skill_desc(text)))
     return out
+
+
+def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
+    d = Path(cwd) / skills_dir
+    p = d / f"{name}.md"
+    if not p.is_file():
+        avail = ", ".join(sorted(x.stem for x in d.glob("*.md"))) if d.is_dir() else ""
+        return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"Error: อ่านสกิลไม่ได้: {e}"
 
 
 def build_system_prompt(context_text: str, skills) -> str:
@@ -249,8 +293,13 @@ def build_system_prompt(context_text: str, skills) -> str:
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
-        body = "\n\n---\n\n".join(f"# Skill: {n}\n{c}" for n, c in skills)
-        parts.append("=== Skills ที่มีในโปรเจกต์ ===\n" + body)
+        idx = "\n".join(f"- {n}: {d}" for n, d in skills)
+        parts.append(
+            "=== Skills ที่มี (โหลดแบบเลือกสรร) ===\n"
+            "รายชื่อสกิลพร้อมคำอธิบายสั้นๆ (เนื้อหาเต็มยังไม่ได้โหลดเข้ามา):\n"
+            f"{idx}\n"
+            "หากงานเกี่ยวข้องกับสกิลใด ให้เรียก load_skill(name) เพื่อโหลดเนื้อหาเต็มก่อนทำงาน "
+            "ห้ามคาดเดอเนื้อหาสกิล")
     return "\n\n".join(parts)
 
 
@@ -297,7 +346,31 @@ class Hooks:
 
     def has_hooks(self) -> bool:
         return (self._resolve_script("pre_tool") is not None
-                or self._resolve_script("post_tool") is not None)
+                or self._resolve_script("post_tool") is not None
+                or self._resolve_script("session_start") is not None
+                or self._resolve_script("session_stop") is not None)
+
+    def run_session_start(self):
+        """เรียก script session_start.{sh,bat,cmd} ตอนเริ่ม session (fail-open)"""
+        self._run_event("session_start")
+
+    def run_session_stop(self):
+        """เรียก script session_stop.{sh,bat,cmd} ตอนจบ session (fail-open)"""
+        self._run_event("session_stop")
+
+    def _run_event(self, event: str):
+        h = self._resolve_script(event)
+        if not h:
+            return
+        p, runner = h
+        payload = json.dumps({"event": event, "cwd": self.cwd}, ensure_ascii=False)
+        try:
+            env = dict(os.environ, YOUSINI_EVENT=event, YOUSINI_CWD=self.cwd)
+            subprocess.run(runner + [str(p)], input=payload,
+                           capture_output=True, text=True, env=env,
+                           cwd=self.cwd, timeout=15)
+        except Exception:
+            pass
 
     def run_pre(self, name: str, args: dict) -> (bool, str):
         """คืน (allowed, reason). fail-open ถ้า hook พัง เพื่อไม่ให้ agent ค้าง"""
@@ -497,7 +570,7 @@ class Agent:
         self.context_file = context_file
         self.skills_dir = skills_dir
         self.context_text = load_context_text(self.cwd, self.context_file)
-        self.skills = load_skills(self.cwd, self.skills_dir)
+        self.skills = load_skill_index(self.cwd, self.skills_dir)
         self.hooks = Hooks(hooks_dir, self.cwd)
         self.system_prompt = build_system_prompt(self.context_text, self.skills)
         self.messages = [{"role": "system", "content": self.system_prompt}]
@@ -505,7 +578,7 @@ class Agent:
     def refresh_context(self):
         """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
         self.context_text = load_context_text(self.cwd, self.context_file)
-        self.skills = load_skills(self.cwd, self.skills_dir)
+        self.skills = load_skill_index(self.cwd, self.skills_dir)
         self.system_prompt = build_system_prompt(self.context_text, self.skills)
         # แทนที่ system message แรก
         if self.messages and self.messages[0]["role"] == "system":
@@ -752,6 +825,8 @@ class Agent:
             return f"Error: web_fetch ไม่ได้: {e}"
 
     def web_search(self, query: str, max_results: int = 5) -> str:
+        if SEARCH_PROVIDER in ("brave", "serpapi", "tavily") and SEARCH_API_KEY:
+            return web_search_api(query, max_results, SEARCH_PROVIDER, SEARCH_API_KEY)
         return web_search_robust(query, max_results)
 
     def set_cwd(self, path: str) -> str:
@@ -778,6 +853,58 @@ class Agent:
     def read_job(self, job_id: str, tail: int = 4000) -> str:
         _, text = self.jobs.read(job_id, tail)
         return text
+
+    # ---- โหลดสกิลแบบเลือกสรร (lazy-load): โมเดลขอโหลดเนื้อหาเต็มเมื่อจำเป็น ----
+    def load_skill(self, name: str) -> str:
+        return load_skill_full(self.cwd, name, self.skills_dir)
+
+    # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
+    def run_python(self, code: str, timeout: int = None) -> str:
+        if not self.allow_shell:
+            return "Error: การรัน Python ถูกปิดในโหมดนี้ (read-only server)"
+        t = timeout or SHELL_TIMEOUT
+        import tempfile
+        fd = None
+        try:
+            fd, path = tempfile.mkstemp(suffix=".py", text=True)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(code)
+            fd = None
+            proc = subprocess.run([sys.executable, path], cwd=self.cwd,
+                                  capture_output=True, text=True, timeout=t)
+            out = (proc.stdout or "") + (proc.stderr or "")
+            if out.strip():
+                console.print(Panel(Text(_truncate(out, 4000), style="dim"),
+                                    title=f"Python (exit={proc.returncode})", border_style="blue"))
+            return _truncate(f"[exit code: {proc.returncode}]\n{out or '(ไม่มีผลลัพธ์)'}")
+        except subprocess.TimeoutExpired:
+            return f"หมดเวลา ({t}s)"
+        except Exception as e:
+            return f"Error: {e}"
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+
+    # ---- เอเจนต์ย่อย (subagent) แยกบริบท ไม่ทำให้บริบทหลักบวม ----
+    def spawn_subagent(self, task: str, focus: str = "") -> str:
+        sub = Agent(model=self.model, cwd=self.cwd, interactive=False,
+                    allow_shell=self.allow_shell, allow_write=False,
+                    checkpoint=False, context_file=self.context_file,
+                    skills_dir=self.skills_dir)
+        sub.system_prompt = (SUBAGENT_SYSTEM_PROMPT
+                             + (f"\n\nโฟกัสงาน: {focus}" if focus else "")
+                             + (f"\n\nบริบทโปรเจกต์:\n{self.context_text}"
+                                if self.context_text.strip() else ""))
+        sub.messages = [{"role": "system", "content": sub.system_prompt}]
+        console.print(Text(f"⚙ เอเจนต์ย่อย: {_truncate(task, 60)}", style="dim"))
+        return _run_subagent_loop(sub, task, max_iter=6)
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +967,62 @@ def web_search_robust(query: str, max_results: int = 5) -> str:
     return f"Error: web_search ไม่ได้จากทุกแหล่ง ({last_err})"
 
 
+# ---------------------------------------------------------------------------
+# web_search ผ่าน API provider จริง (Brave / SerpAPI / Tavily) — ทางเลือกเสริม
+# ใช้เมื่อตั้ง YOUSINI_SEARCH_PROVIDER + key แล้ว ไม่พึ่ง scraping
+# ---------------------------------------------------------------------------
+def web_search_api(query: str, max_results: int, provider: str, api_key: str) -> str:
+    try:
+        if provider == "brave":
+            url = ("https://api.search.brave.com/res/v1/web/search?"
+                   + urllib.parse.urlencode({"q": query, "count": max_results}))
+            req = urllib.request.Request(url, headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            rows = (data.get("web", {}) or {}).get("results", [])[:max_results]
+            out = [f"{i+1}. {x.get('title','')}\n   {x.get('url','')}\n   "
+                   f"{_strip_tags(x.get('description',''))}"
+                   for i, x in enumerate(rows)]
+        elif provider == "serpapi":
+            url = ("https://serpapi.com/search.json?"
+                   + urllib.parse.urlencode({"q": query, "num": max_results,
+                                             "api_key": api_key}))
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            rows = data.get("organic_results", [])[:max_results]
+            out = [f"{i+1}. {x.get('title','')}\n   {x.get('link','')}\n   "
+                   f"{_strip_tags(x.get('snippet',''))}"
+                   for i, x in enumerate(rows)]
+        elif provider == "tavily":
+            url = "https://api.tavily.com/search"
+            body = json.dumps({"api_key": api_key, "query": query,
+                               "max_results": max_results,
+                               "search_depth": "basic"}).encode("utf-8")
+            req = urllib.request.Request(url, data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            rows = data.get("results", [])[:max_results]
+            out = [f"{i+1}. {x.get('title','')}\n   {x.get('url','')}\n   "
+                   f"{_strip_tags(str(x.get('content','')))}"
+                   for i, x in enumerate(rows)]
+        else:
+            return f"Error: ไม่รู้จัก provider '{provider}'"
+        if not out:
+            return "(ไม่พบผลลัพธ์จาก " + provider + ")"
+        res = "\n".join(out)
+        console.print(Panel(Text(res, style="dim"),
+                            title=f"ค้นหา ({provider}): {query}", border_style="blue"))
+        return res
+    except Exception as e:
+        # ถ้า API พัง ตกกลับไป scraping อัตโนมัติ (fail-open)
+        return (f"(API {provider} ล้มเหลว: {e} — ลอง scraping)\n"
+                + web_search_robust(query, max_results))
+
+
 TOOLS = [
     {"type": "function", "function": {"name": "shell", "description": "รันคำสั่ง bash บนเครื่อง (ls, python3, pip install, git, สร้างโปรเจกต์). เพิ่ม run_in_background=true สำหรับคำสั่งที่รันนาน แล้วอ่านผลด้วย read_job", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}, "run_in_background": {"type": "boolean"}}, "required": ["command"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "อ่านไฟล์ข้อความ (มี syntax highlighting)", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}}},
@@ -854,6 +1037,9 @@ TOOLS = [
     {"type": "function", "function": {"name": "ask_user", "description": "ถามผู้ใช้เฉพาะเมื่อขาดข้อมูลสำคัญจริงๆ เท่านั้น", "parameters": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}}},
     {"type": "function", "function": {"name": "list_jobs", "description": "แสดงงาน shell แบบ background ที่กำลังรันหรือเสร็จแล้ว", "parameters": {"type": "object", "properties": {}}, "required": []}},
     {"type": "function", "function": {"name": "read_job", "description": "อ่านผลลัพธ์ของงาน background ตาม job id (ได้จาก shell ที่รันแบบ background)", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}, "tail": {"type": "integer", "description": "จำกัดตัวอักษรท้ายสุด (ค่าเริ่มต้น 4000)"}}, "required": ["job_id"]}}},
+    {"type": "function", "function": {"name": "load_skill", "description": "โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) เพื่อนำมาใช้เป็นแนวทางทำงาน เรียกเฉพาะเมื่องานเกี่ยวข้องกับสกิลนั้น", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล เช่น 'dep' (ไม่รวม .md)"}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "run_python", "description": "รันโค้ด Python บนเครื่อง คืน stdout/stderr (ใช้สำหรับคำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) ปิดได้ในโหมด read-only", "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "โค้ด Python เต็ม"}, "timeout": {"type": "integer", "description": "จำกัดวินาที (ค่าเริ่มต้นตาม SHELL_TIMEOUT)"}}, "required": ["code"]}}},
+    {"type": "function", "function": {"name": "spawn_subagent", "description": "รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (เช่น วิเคราะห์ไฟล์, ค้นหาข้อมูล, สรุป) คืนคำสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม ห้ามเรียกซ้อนกัน", "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "คำสั่งงานสำหรับเอเจนต์ย่อย"}, "focus": {"type": "string", "description": "โฟกัสเพิ่มเติม (ไม่บังคับ)"}}, "required": ["task"]}}},
 ]
 
 IMPL = {
@@ -864,6 +1050,9 @@ IMPL = {
     "web_search": lambda a, k: k.web_search(**a), "set_cwd": lambda a, k: k.set_cwd(**a),
     "ask_user": lambda a, k: k.ask_user(**a), "list_jobs": lambda a, k: k.list_jobs(),
     "read_job": lambda a, k: k.read_job(**a),
+    "load_skill": lambda a, k: k.load_skill(**a),
+    "run_python": lambda a, k: k.run_python(**a),
+    "spawn_subagent": lambda a, k: k.spawn_subagent(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -889,6 +1078,12 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
         agent.messages.append({"role": "tool", "tool_call_id": tc_id,
                                "content": f"Blocked by hook: {reason}"})
         return
+    if name not in IMPL:
+        msg = (f"Error: ไม่มีเครื่องมือ '{name}' ในระบบ "
+               f"(มี: {', '.join(sorted(IMPL))})")
+        console.print(Text(f"⚠ {msg}", style="red"))
+        agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": msg})
+        return
     shown = args.get("command", "") if name == "shell" else args
     if not isinstance(shown, str):
         shown = json.dumps(shown, ensure_ascii=False)
@@ -909,6 +1104,47 @@ def _fallback_turn(agent: Agent, err):
         console.print(Markdown(ans))
     except Exception as e2:
         console.print(Text(f"Error: {e2}", style="red"))
+
+
+def _run_subagent_loop(agent: Agent, task: str, max_iter: int = 6) -> str:
+    """ลูปเอเจนต์ย่อยแบบไม่สตรีมมิง (เก็บคำตอบสุดท้าย) — รันภายใน tool call ของเอเจนต์หลัก"""
+    agent.messages.append({"role": "user", "content": task})
+    for _ in range(max_iter):
+        try:
+            resp = client.chat.completions.create(
+                model=agent.model, messages=agent.messages, tools=TOOLS,
+                tool_choice="auto", temperature=0.3,
+                parallel_tool_calls=False)
+        except Exception as e:
+            return f"[เอเจนต์ย่อย error: {e}]"
+        msg = resp.choices[0].message
+        if not msg.tool_calls:
+            return msg.content or "(ไม่มีคำตอบ)"
+        agent.messages.append(msg)
+        for tc in msg.tool_calls:
+            fn = tc.function.name or ""
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            # ห้ามสร้างเอเจนต์ย่อยซ้อนกัน
+            if fn == "spawn_subagent":
+                agent.messages.append({"role": "tool", "tool_call_id": tc.id,
+                    "content": "Error: ไม่สามารถสร้างเอเจนต์ย่อยซ้อนกันได้ (รองรับแค่ 1 ชั้น)"})
+                continue
+            if fn not in IMPL:
+                agent.messages.append({"role": "tool", "tool_call_id": tc.id,
+                    "content": f"Error: ไม่มีเครื่องมือ '{fn}'"})
+                continue
+            try:
+                result = IMPL[fn](args, agent)
+            except Exception as e:
+                result = f"Error: {e}"
+            agent.messages.append({"role": "tool", "tool_call_id": tc.id,
+                                   "content": str(result)})
+    return "(เอเจนต์ย่อยหมดรอบจำกัด — คืนผลลัพธ์ที่ได้)"
 
 
 def chat_turn(agent: Agent, user_text: str):
@@ -1290,6 +1526,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                         pass
                 sessions[sid] = ag
                 locks[sid] = threading.Lock()
+                ag.hooks.run_session_start()
             return sessions[sid], locks[sid]
 
     def persist(sid, agent):
@@ -1388,6 +1625,8 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
         allow_reuse_address = True
 
     httpd = ThreadingServer((host, port), Handler)
+
+    atexit.register(lambda: [s.hooks.run_session_stop() for s in sessions.values()])
 
     # ---- แบนเนอร์เซิร์ฟเวอร์อลังการ ----
     shown_host = "localhost" if host in ("127.0.0.1", "localhost") else host
@@ -1537,7 +1776,8 @@ def mcp_main(allow_exec: bool = False):
         sys.stdout.flush()
 
     def call_tool(name, arguments):
-        if name in ("shell", "write_file", "edit_file") and not allow_exec:
+        if name in ("shell", "write_file", "edit_file", "run_python",
+                    "spawn_subagent") and not allow_exec:
             return {"content": [{"type": "text",
                     "text": f"Error: tool '{name}' ถูกปิดในโหมด MCP ปลอดภัย (รันด้วย --allow-exec)"}],
                     "isError": True}
@@ -1608,6 +1848,8 @@ def _default_session_name(cwd: str) -> str:
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
+    agent.hooks.run_session_start()
+    atexit.register(lambda: agent.hooks.run_session_stop())
     store = SessionStore(SESSION_DIR)
     while True:
         try:

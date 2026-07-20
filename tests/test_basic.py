@@ -27,12 +27,69 @@ def test_context_and_skills(tmp_path, monkeypatch):
     (tmp_path / "skills").mkdir()
     (tmp_path / "skills" / "dep.md").write_text("# Skill dep\nรัน pip install\n", encoding="utf-8")
     ctx = yousini.load_context_text(str(tmp_path))
-    skills = yousini.load_skills(str(tmp_path))
+    skills = yousini.load_skill_index(str(tmp_path))
     sp = yousini.build_system_prompt(ctx, skills)
     assert "โปรเจกต์ X" in ctx
     assert len(skills) == 1
-    assert "Skill: dep" in sp
+    assert "dep" in sp
+    assert "Skills" in sp
     assert "บริบทโปรเจกต์" in sp
+
+
+def test_load_skill_full(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "foo.md").write_text("# Foo\nเนื้อหาเต็มของสกิล foo\n", encoding="utf-8")
+    full = yousini.load_skill_full(str(tmp_path), "foo")
+    assert "เนื้อหาเต็มของสกิล foo" in full
+    missing = yousini.load_skill_full(str(tmp_path), "nope")
+    assert "ไม่พบสกิล" in missing
+
+
+def test_run_python(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ag = yousini.Agent(interactive=False, cwd=str(tmp_path))
+    out = ag.run_python("print(21 * 2)")
+    assert "42" in out
+    assert "exit code: 0" in out
+    # gated in read-only mode
+    ag_r = yousini.Agent(interactive=False, cwd=str(tmp_path), allow_shell=False)
+    assert "ปิด" in ag_r.run_python("print(1)")
+
+
+def test_web_search_api_unknown_provider():
+    # provider ไม่รู้จัก → คืน string error ไม่ crash (ไม่ต้องมีเน็ต)
+    res = yousini.web_search_api("anything", 3, "bogus", "key")
+    assert isinstance(res, str)
+    assert "ไม่รู้จัก provider" in res
+
+
+def test_search_dispatch_fallback():
+    # ไม่ตั้ง provider → web_search ใช้ scraping แบบเดิม คืน string เสมอ
+    out = yousini.web_search_robust("offline query that fails", 2)
+    assert isinstance(out, str)
+
+
+def test_subagent_loop_callable():
+    assert callable(yousini._run_subagent_loop)
+    assert hasattr(yousini, "SUBAGENT_SYSTEM_PROMPT")
+    assert "Yousini Sub-Agent" in yousini.SUBAGENT_SYSTEM_PROMPT
+
+
+def test_hooks_session_events(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    hooks_dir = tmp_path / ".yousini" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    marker = "session_start.marker"
+    # เขียนทั้ง .bat (Windows) และ .sh (Unix) ให้รันได้บนทุกแพลตฟอร์ม
+    (hooks_dir / "session_start.bat").write_text(
+        f"@echo off\necho x > {marker}\n", encoding="utf-8")
+    (hooks_dir / "session_start.sh").write_text(
+        f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    h = yousini.Hooks(str(hooks_dir), str(tmp_path))
+    assert h.has_hooks() is True
+    h.run_session_start()
+    assert (tmp_path / marker).exists()
 
 
 def test_session_store(tmp_path):

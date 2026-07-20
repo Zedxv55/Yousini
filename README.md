@@ -132,6 +132,8 @@ cp .env.example .env
 | `AUTO_RUN` | `1`=รัน shell ทันทีไม่ถาม (อันตราย) | `0` |
 | `CONFIRM_FILES` | `0`=เขียนไฟล์ไม่ต้องถาม | `1` |
 | `SHELL_TIMEOUT` | ตัดคำสั่งค้างที่ (วินาที) | `60` |
+| `YOUSINI_SEARCH_PROVIDER` | เสิร์ชผ่าน API จริงแทน scraping: `brave` / `serpapi` / `tavily` (เว้นว่าง=ใช้ scraping หลายชั้น) | _(ว่าง)_ |
+| `YOUSINI_SEARCH_API_KEY` (หรือ `BRAVE_API_KEY` / `SERPAPI_KEY` / `TAVILY_API_KEY`) | คีย์สำหรับ provider ค้นหาที่เลือก | — |
 
 > เข้ากันได้กับของเดิม: หากไม่มี `YOUSINI_*` จะตกไปอ่าน `ZELAX_*` หรือ `GROQ_*` เป็น fallback ให้ย้ายมาใช้ `YOUSINI_*` ได้ทันที
 
@@ -175,6 +177,9 @@ YOUSINI_MODEL=deepseek-chat
 | `web_search` | ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์) |
 | `set_cwd` | เปลี่ยนโฟลเดอร์ทำงาน |
 | `ask_user` | ถามผู้ใช้ (เมื่อขาดข้อมูลสำคัญเท่านั้น) |
+| `load_skill` | โหลดเนื้อหาเต็มของสกิลตามชื่อ (lazy-load — ไม่กิน context ถ้าไม่ได้ใช้) |
+| `run_python` | รันโค้ด Python บนเครื่อง (คำนวณ/ประมวลผล/ทดสอบ snippet) |
+| `spawn_subagent` | รันเอเจนต์ย่อยแยกบริบท เพื่อทำงานเฉพาะส่วนแล้วคืนสรุป (ไม่ทำให้บริบทหลักบวม) |
 
 ---
 
@@ -222,17 +227,22 @@ YOUSINI_MODEL=deepseek-chat
 
 ### 🧩 Skills (`skills/*.md`)
 
-ทุกไฟล์ `.md` ในโฟลเดอร์ `skills/` (relative ต่อ cwd) จะถูกโหลดเข้า system prompt
-อัตโนมัติ ดูตัวอย่างได้ที่ `skills/example.md` ใช้เพิ่มความรู้/เวิร์กโฟลว์เฉพาะทาง
+ทุกไฟล์ `.md` ในโฟลเดอร์ `skills/` (relative ต่อ cwd) จะถูก**สแกนเฉพาะชื่อ+คำอธิบาย**
+โหลดเข้า system prompt (ไม่โหลดเนื้อหาเต็ม) เพื่อไม่ให้ context บวมเมื่อสกิลเยอะ
+เมื่องานเกี่ยวข้องกับสกิลใด โมเดลจะเรียก `load_skill(name)` เพื่อโหลดเนื้อหาเต็มเข้ามา
+ดูตัวอย่างได้ที่ `skills/example.md` ใช้เพิ่มความรู้/เวิร์กโฟลว์เฉพาะทาง
 
-### 🪝 Hooks (pre_tool / post_tool)
+### 🪝 Hooks (pre_tool / post_tool / session_start / session_stop)
 
-วางสคริปต์ `pre_tool.sh` และ/หรือ `post_tool.sh` ในโฟลเดอร์ `.yousini/hooks`
-(หรือ `~/.yousini/hooks` หรือระบุผ่าน `YOUSINI_HOOKS=...`) — รันก่อน/หลังทุก tool call:
+วางสคริปต์ในโฟลเดอร์ `.yousini/hooks` (หรือ `~/.yousini/hooks` หรือระบุผ่าน
+`YOUSINI_HOOKS=...`) รันตาม lifecycle ต่างๆ:
 
-- `pre_tool` รับ JSON `{"tool","args"}` ทาง stdin + env `YOUSINI_TOOL`/`YOUSINI_CWD`
-  - **exit 0** → อนุญาต · **exit != 0** → บล็อก (stdout กลับเป็นเหตุผลให้โมเดล)
-- `post_tool` รับ `{"tool","args","result"}` — best-effort ไม่เปลี่ยนผลลัพธ์
+- `pre_tool` / `post_tool` — รันก่อน/หลัง**ทุก** tool call
+  - `pre_tool` รับ JSON `{"tool","args"}` ทาง stdin + env `YOUSINI_TOOL`/`YOUSINI_CWD`
+    - **exit 0** → อนุญาต · **exit != 0** → บล็อก (stdout กลับเป็นเหตุผลให้โมเดล)
+  - `post_tool` รับ `{"tool","args","result"}` — best-effort ไม่เปลี่ยนผลลัพธ์
+- `session_start` — รันตอนเริ่ม session (audit log / เตรียมสภาพแวดล้อม)
+- `session_stop` — รันตอนจบ session (cleanup / flush log) — ผูกกับ `atexit` ด้วย
 
 ดูตัวอย่าง `pre_tool.example.sh` / `post_tool.example.sh` (กันดาวน์โหลดสคริปต์จากเน็ตแล้วรัน, กันแตะไฟล์ระบบ)
 
