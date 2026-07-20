@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# CodeagentX launcher — พิมพ์ 'codeagentx' ในเทอร์มินอลเพื่อเปิด Agent
+AGENT_DIR="/home/it-admin/CodeagentX"
+cd "$AGENT_DIR" || exit 1
+exec python3 "$AGENT_DIR/codeagentx.py" "$@"

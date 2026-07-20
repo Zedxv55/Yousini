@@ -1,0 +1,7 @@
+# ห้ามอัปโหลด key
+.env
+# python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
