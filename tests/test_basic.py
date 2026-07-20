@@ -92,6 +92,31 @@ def test_hooks_session_events(tmp_path, monkeypatch):
     assert (tmp_path / marker).exists()
 
 
+def test_compact_short_context_noop(tmp_path):
+    # บริบทสั้น → compact คืนข้อความ "ไม่ต้องยุบ" โดยไม่เรียก API
+    ag = yousini.Agent(interactive=False, cwd=str(tmp_path))
+    out = ag.compact()
+    assert "ไม่ต้องยุบ" in out
+    assert len(ag.messages) == 1  # ยังมีแค่ system
+
+
+def test_status_footer_runs(tmp_path):
+    ag = yousini.Agent(interactive=False, cwd=str(tmp_path))
+    ag._add_usage(type("U", (), {"prompt_tokens": 10, "completion_tokens": 5})())
+    assert ag.usage["prompt_tokens"] == 10
+    assert ag.usage["completion_tokens"] == 5
+
+
+def test_todos_roundtrip(tmp_path):
+    ag = yousini.Agent(interactive=False, cwd=str(tmp_path))
+    r1 = ag.manage_todos("add", content="ทำ A")
+    assert "#1" in r1
+    r2 = ag.manage_todos("complete", todo_id=1)
+    assert "เสร็จสิ้น" in r2
+    assert ag.todos[0]["status"] == "completed"
+    assert "completed" in ag._todos_text()
+
+
 def test_session_store(tmp_path):
     store = yousini.SessionStore(tmp_path / "sessions")
     store.save("demo", [{"role": "user", "content": "hi"}], {"model": "x"})

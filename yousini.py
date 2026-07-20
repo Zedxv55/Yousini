@@ -84,6 +84,58 @@ from rich.spinner import Spinner
 
 console = Console()
 
+# ---------------------------------------------------------------------------
+# ดีไซน์: ความหมายสีแบบเสมอต้นเสมอปลาย (semantic colors)
+# กฎสีตามที่ตกลง: "กำลังคิด/ประมวลผล = เทา (muted) · คำตอบ = เน้นสี"
+# ---------------------------------------------------------------------------
+C_THINK = "grey58"          # กำลังคิด / เตรียมเครื่องมือ / ผลลัพธ์เครื่องมือ → เทา
+C_TOOL = "bold cyan"        # เรียกเครื่องมือ (การกระทำ)
+C_TOOL_ARGS = "grey66"      # อาร์กิวเมนต์เครื่องมือ (เน้นน้อยลง)
+C_RESULT = "grey66"         # ผลลัพธ์เครื่องมือ
+C_ANSWER = "cyan"           # กรอบคำตอบ (เน้น)
+C_OK = "green"              # สำเร็จ / ปลอดภัย
+C_WARN = "yellow"           # คำเตือน / ต้องยืนยัน
+C_ERR = "red"               # อันตราย / ผิดพลาด
+C_ACCENT = "magenta"        # หัวข้อหลัก / แบนเนอร์
+C_PROMPT = "bold yellow"    # ข้อความขออนุมัติ
+
+
+def _think(text: str = "กำลังคิด…") -> Text:
+    return Text("⠿ " + text, style=C_THINK)
+
+
+def _answer_panel(md_text: str) -> Panel:
+    return Panel(Markdown(md_text), border_style=C_ANSWER,
+                 title="คำตอบ Yousini", title_align="left", padding=(0, 1))
+
+
+def _tool_line(name: str, args_shown) -> Text:
+    t = Text()
+    t.append("⏺ ", style=C_TOOL)
+    t.append(name, style="bold cyan")
+    shown = args_shown if isinstance(args_shown, str) else json.dumps(args_shown, ensure_ascii=False)
+    t.append(f"({_truncate(shown, 200)})", style=C_TOOL_ARGS)
+    return t
+
+
+def _divider(label: str, style: str = C_ACCENT) -> Rule:
+    return Rule(label, style=style)
+
+
+def _status_footer(agent: "Agent"):
+    """แถบสถานะด้านล่าง (สีเทา): โมเดล · รอบการสนทนา · โทเค็นสะสม"""
+    msgs = max(0, len(agent.messages) - 1)
+    u = agent.usage
+    if u["prompt_tokens"] or u["completion_tokens"]:
+        tok = f"tok {u['prompt_tokens'] + u['completion_tokens']:,} (in {u['prompt_tokens']:,}/out {u['completion_tokens']:,})"
+    else:
+        tok = "tok —"
+    t = Text()
+    t.append(f"  {agent.model}", style=C_THINK)
+    t.append(f"   ·   ข้อความ {msgs}   ·   {tok}", style=C_THINK)
+    console.print(t)
+
+
 # ---- Config: รองรับทุก OpenAI-compatible API ----
 # อ่าน YOUSINI_* ก่อน ถ้าไม่มีตกไปใช้ ZELAX_* แล้ว GROQ_* (เข้ากันได้กับของเดิม)
 API_KEY = (os.getenv("YOUSINI_API_KEY") or os.getenv("ZELAX_API_KEY")
@@ -183,6 +235,7 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - load_skill โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) — เรียกเมื่องานเกี่ยวข้องกับสกิลนั้น
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
+- manage_todos จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า): action=add/update/complete/start/delete/list — ใช้แสดงแผนงานให้ผู้ใช้เห็นชัดเจนก่อนลงมือ
 
 หลักการทำงาน (Claude Code style):
 1. วิเคราะห์คำสั่ง → วางแผนสั้นๆ → ใช้เครื่องมือ → ตรวจสอบผล → สรุป
@@ -574,6 +627,11 @@ class Agent:
         self.hooks = Hooks(hooks_dir, self.cwd)
         self.system_prompt = build_system_prompt(self.context_text, self.skills)
         self.messages = [{"role": "system", "content": self.system_prompt}]
+        # สถิติโทเค็น (best-effort: อ่านจาก usage ของ API ถ้ามี)
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        # รายการสิ่งที่ต้องทำ (todo) สำหรับแสดงแผน/ความคืบหน้าให้ผู้ใช้
+        self.todos = []
+        self._todo_seq = 0
 
     def refresh_context(self):
         """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
@@ -588,6 +646,89 @@ class Agent:
 
     def begin_turn(self):
         self._did_checkpoint = False
+
+    def _add_usage(self, usage):
+        """สะสมโทเค็นจาก usage ของ API (free model บางตัวอาจไม่ส่งมา)"""
+        try:
+            self.usage["prompt_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+            self.usage["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        except Exception:
+            pass
+
+    def compact(self, keep_last: int = 6) -> str:
+        """ยุบบริบทเก่าๆ เป็นสรุปสั้นๆ เพื่อลดโทเค็น (ช่วยโมเดลฟรีเมื่อสนทนายาว)
+        เก็บ system message + ไม่เกิน keep_last ข้อความล่าสุด แล้วสรุปที่เหลือด้วยโมเดล"""
+        if len(self.messages) <= keep_last + 1:
+            return "(ไม่ต้องยุบ บริบทยังสั้นอยู่)"
+        sys0 = self.messages[0]
+        rest = self.messages[1:]
+        to_sum = rest[:-keep_last] if keep_last else rest
+        recent = rest[-keep_last:] if keep_last else []
+        blob = "\n\n".join(
+            f"[{m.get('role','?')}] {_truncate(m.get('content') or '', 1500)}"
+            for m in to_sum)
+        prompt = ("สรุปบทสนทนาด้านล่างให้กระชับที่สุด (เก็บเฉพาะข้อมูลสำคัญ ที่ทำไปแล้ว "
+                  "ผลลัพธ์ และคำตัดสิน) ตอบเป็นภาษาไทย ย่อหน้าเดียว ไม่ต้องไหว้:")
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": prompt},
+                          {"role": "user", "content": blob}],
+                temperature=0.2, stream=False)
+            summ = resp.choices[0].message.content or ""
+        except Exception as e:
+            return f"(ยุบบริบทไม่ได้: {e})"
+        self.messages = [
+            sys0,
+            {"role": "user", "content": "[บริบทสรุปจากการสนทนาก่อนหน้า]\n" + summ},
+            {"role": "assistant", "content": "รับทราบสรุปบริบทแล้ว"},
+        ] + recent
+        return f"ยุบบริบทเหลือ {len(self.messages)} ข้อความ"
+
+    # ---- รายการสิ่งที่ต้องทำ (todo) — แสดงแผน/ความคืบหน้าให้ผู้ใช้เห็นชัดเจน ----
+    def manage_todos(self, action: str, content: str = "", todo_id=None, status: str = "") -> str:
+        act = (action or "").lower()
+        if act in ("add", "สร้าง", "เพิ่ม"):
+            self._todo_seq += 1
+            self.todos.append({"id": self._todo_seq, "content": content,
+                               "status": "pending"})
+            return f"เพิ่ม todo #{self._todo_seq}: {content}"
+        if act in ("update", "แก้ไข", "set"):
+            for t in self.todos:
+                if str(t["id"]) == str(todo_id):
+                    t["content"] = content or t["content"]
+                    return f"แก้ไข todo #{t['id']}: {t['content']}"
+            return f"Error: ไม่พบ todo #{todo_id}"
+        if act in ("complete", "done", "เสร็จ", "สำเร็จ"):
+            for t in self.todos:
+                if str(t["id"]) == str(todo_id):
+                    t["status"] = "completed"
+                    return f"ทำเครื่องหมายเสร็จสิ้น todo #{t['id']}"
+            return f"Error: ไม่พบ todo #{todo_id}"
+        if act in ("start", "in_progress", "กำลังทำ", "เริ่ม"):
+            for t in self.todos:
+                if str(t["id"]) == str(todo_id):
+                    t["status"] = "in_progress"
+                    return f"เริ่มทำ todo #{t['id']}"
+            return f"Error: ไม่พบ todo #{todo_id}"
+        if act in ("delete", "ลบ", "remove"):
+            before = len(self.todos)
+            self.todos = [t for t in self.todos if str(t["id"]) != str(todo_id)]
+            return f"ลบ todo #{todo_id}" if len(self.todos) < before else f"Error: ไม่พบ todo #{todo_id}"
+        if act in ("list", "แสดง", "ดู"):
+            return self._todos_text()
+        return ("Error: action ต้องเป็น add/update/complete/start/delete/list")
+
+    def _todos_text(self) -> str:
+        if not self.todos:
+            return "(ยังไม่มีรายการสิ่งที่ต้องทำ)"
+        sym = {"pending": "○", "in_progress": "◐", "completed": "●"}
+        return "\n".join(f"{sym.get(t['status'],'○')} #{t['id']} [{t['status']}] {t['content']}"
+                         for t in self.todos)
+
+    def _print_todos(self):
+        console.print(Panel(self._todos_text(), title="📋 สิ่งที่ต้องทำ",
+                            border_style=C_WARN, padding=(0, 1)))
 
     # ---- trimming: ตัดที่ user-boundary เท่านั้น ไม่ให้เหลือ tool-result ลอยๆ ----
     def _trim(self, max_msgs=40):
@@ -639,18 +780,20 @@ class Agent:
         if not self.allow_shell:
             return "Error: shell ถูกปิดในโหมดนี้ (read-only server)"
         dangerous = is_dangerous(command)
-        if dangerous:
-            console.print(Text(f"คำเตือน: คำสั่งเสี่ยงสูง: {command}", style="yellow"))
         if not self.interactive:
             # โหมด headless/server: ห้ามคำสั่งอันตรายเด็ดขาด นอกจาก auto_run
             if dangerous and not self.auto_run:
                 return "Error: คำสั่งอันตรายถูกบล็อกในโหมด headless (ตั้ง AUTO_RUN=1 เพื่ออนุญาต)"
         elif not self.auto_run or dangerous:
-            console.print(Text(f"Shell: {command}", style="cyan"))
-            ans = _safe_input("  รัน? [y/N/e=แก้ไข] ").strip().lower()
+            border = C_ERR if dangerous else C_WARN
+            title = "⚠ คำสั่งเสี่ยงสูง — ยืนยันก่อนรัน" if dangerous else "ยืนยันรัน shell"
+            console.print(Panel(Text(command, style="bold white"), title=title,
+                                border_style=border, padding=(0, 1)))
+            ans = _safe_input(f"  [y] รัน   [N] ยกเลิก   [e] แก้ไข  ? ").strip().lower()
             if ans in ("e", "edit"):
                 return self.shell(_safe_input("  พิมพ์คำสั่งใหม่: ").strip(), timeout, run_in_background)
             if ans not in ("y", "yes", "1"):
+                console.print(Text("↩ ยกเลิกโดยผู้ใช้", style=C_WARN))
                 return "ปฏิเสธโดยผู้ใช้"
         if run_in_background:
             t = timeout or SHELL_TIMEOUT
@@ -722,7 +865,9 @@ class Agent:
         self.checkpoint(f"ก่อนเขียน {os.path.basename(path)}")
         self._show_diff(path, old, content)
         if self.interactive and self.confirm_files and os.path.exists(fp):
-            if _safe_input("   ยืนยันเขียนทับ? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+            ans = _safe_input(f"   เขียนทับไฟล์ {path}?  [y] ใช่   [N] ไม่เขียน  ? ").strip().lower()
+            if ans not in ("y", "yes", "1"):
+                console.print(Text("↩ ยกเลิกการเขียนโดยผู้ใช้", style=C_WARN))
                 return "ปฏิเสธโดยผู้ใช้"
         try:
             os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
@@ -748,7 +893,9 @@ class Agent:
         new = old.replace(old_string, new_string)
         self._show_diff(path, old, new)
         if self.interactive and self.confirm_files:
-            if _safe_input("   ยืนยันแก้ไฟล์? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+            ans = _safe_input(f"   แก้ไฟล์ {path}?  [y] ใช่   [N] ไม่แก้  ? ").strip().lower()
+            if ans not in ("y", "yes", "1"):
+                console.print(Text("↩ ยกเลิกการแก้โดยผู้ใช้", style=C_WARN))
                 return "ปฏิเสธโดยผู้ใช้"
         try:
             with open(fp, "w", encoding="utf-8") as f:
@@ -1040,6 +1187,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "load_skill", "description": "โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) เพื่อนำมาใช้เป็นแนวทางทำงาน เรียกเฉพาะเมื่องานเกี่ยวข้องกับสกิลนั้น", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล เช่น 'dep' (ไม่รวม .md)"}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "run_python", "description": "รันโค้ด Python บนเครื่อง คืน stdout/stderr (ใช้สำหรับคำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) ปิดได้ในโหมด read-only", "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "โค้ด Python เต็ม"}, "timeout": {"type": "integer", "description": "จำกัดวินาที (ค่าเริ่มต้นตาม SHELL_TIMEOUT)"}}, "required": ["code"]}}},
     {"type": "function", "function": {"name": "spawn_subagent", "description": "รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (เช่น วิเคราะห์ไฟล์, ค้นหาข้อมูล, สรุป) คืนคำสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม ห้ามเรียกซ้อนกัน", "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "คำสั่งงานสำหรับเอเจนต์ย่อย"}, "focus": {"type": "string", "description": "โฟกัสเพิ่มเติม (ไม่บังคับ)"}}, "required": ["task"]}}},
+    {"type": "function", "function": {"name": "manage_todos", "description": "จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) เพื่อแสดงแผนงานให้ผู้ใช้เห็นชัดเจน: action สามารถเป็น add/update/complete/start/delete/list — add ต้องการ content, complete/start/update/delete ต้องการ todo_id", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / update / complete / start / delete / list"}, "content": {"type": "string", "description": "ข้อความรายการ (สำหรับ add/update)"}, "todo_id": {"type": "integer", "description": "รหัสรายการ (สำหรับ update/complete/start/delete)"}, "status": {"type": "string", "description": "สถานะใหม่ (ไม่บังคับ)"}}, "required": ["action"]}}},
 ]
 
 IMPL = {
@@ -1053,6 +1201,7 @@ IMPL = {
     "load_skill": lambda a, k: k.load_skill(**a),
     "run_python": lambda a, k: k.run_python(**a),
     "spawn_subagent": lambda a, k: k.spawn_subagent(**a),
+    "manage_todos": lambda a, k: k.manage_todos(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1087,11 +1236,14 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
     shown = args.get("command", "") if name == "shell" else args
     if not isinstance(shown, str):
         shown = json.dumps(shown, ensure_ascii=False)
-    console.print(Text(f"⏺ {name}({shown})", style="bold cyan"))
+    console.print(_tool_line(name, shown))
     result = IMPL[name](args, agent)
     agent.hooks.run_post(name, args, str(result))
-    console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style="dim"))
+    console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style=C_RESULT))
     agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
+    # สำหรับ todo: วาดแผนงานให้ผู้ใช้เห็นชัดเจนด้วย
+    if name == "manage_todos":
+        agent._print_todos()
 
 
 def _fallback_turn(agent: Agent, err):
@@ -1172,13 +1324,17 @@ def chat_turn(agent: Agent, user_text: str):
         tool_calls = []
 
         def render():
+            # กำลังคิด = เทา · คำตอบ (ระหว่างสตรีม) = Markdown ปกติ
             if not content:
-                return Spinner("dots", text="กำลังคิด…", style="dim")
+                return _think("กำลังคิด…")
             return Markdown("".join(content))
 
         try:
             with Live(render(), console=console, refresh_per_second=12) as live:
                 for chunk in stream:
+                    u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        agent._add_usage(u)
                     if not chunk.choices:
                         continue
                     d = chunk.choices[0].delta
@@ -1211,7 +1367,7 @@ def chat_turn(agent: Agent, user_text: str):
 
         if any(t.get("name") for t in tool_calls):
             tool_seen = True
-            console.print(Text("กำลังเตรียมเครื่องมือ…", style="dim"))
+            console.print(_think("เตรียมเครื่องมือ…"))
             asst = {"role": "assistant", "content": "".join(content)}
             asst["tool_calls"] = [
                 {"id": t["id"], "type": "function",
@@ -1232,8 +1388,10 @@ def chat_turn(agent: Agent, user_text: str):
 
         ans = "".join(content)
         agent.messages.append({"role": "assistant", "content": ans})
-        if tool_seen:
-            console.rule("คำตอบ Yousini", style="magenta")
+        # คำตอบเน้นสี (แยกจากช่วง "กำลังคิด" ที่เป็นสีเทา)
+        if ans.strip():
+            console.print(_answer_panel(ans))
+        _status_footer(agent)
         console.print()
         return
 
@@ -1266,6 +1424,9 @@ def run_turn_events(agent: Agent, user_text: str):
         tool_calls = []
         try:
             for chunk in stream:
+                u = getattr(chunk, "usage", None)
+                if u is not None:
+                    agent._add_usage(u)
                 if not chunk.choices:
                     continue
                 d = chunk.choices[0].delta
@@ -1419,6 +1580,8 @@ def _print_help():
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/jobs", "แสดงงาน shell background"),
+        ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
+        ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
         ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
         ("/exit, /quit", "ออก"),
@@ -1874,6 +2037,10 @@ def _run_repl(agent: Agent):
             _print_hooks(agent); continue
         if low == "/jobs":
             console.print(Panel(agent.jobs.summary(), title="Background jobs", border_style="magenta")); continue
+        if low == "/todos":
+            agent._print_todos(); continue
+        if low == "/compact":
+            console.print(Text(agent.compact(), style=C_OK)); continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
