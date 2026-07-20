@@ -129,6 +129,14 @@ def is_dangerous(cmd: str) -> bool:
     return any(r.search(cmd) for r in DANGER_RE)
 
 
+def _safe_input(prompt: str) -> str:
+    """อ่าน input อย่างปลอดภัย ถ้า stdin ปิด (ไม่มี TTY / ถูก redirect) จะคืนค่าว่างแทนที่จะ crash (EOFError)"""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
+
+
 def _truncate(s: str, n: int = 4000) -> str:
     if len(s) > n:
         return s[:n] + f"\n…(ตัด remaining {len(s) - n} ตัวอักษร)"
@@ -177,7 +185,8 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 7. เมื่อเห็นผลจากเครื่องมือแล้ว ให้นำไปใช้ต่อ ห้ามเรียก ask_user ถามผลที่ตนเห็นอยู่แล้ว
 8. เมื่องานเสร็จ ให้สรุปสั้นๆ เป็นภาษาไทย พร้อมบอกไฟล์/คำสั่งที่ทำไป
 9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้
-10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ"""
+10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
+11. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
 
 
 # ---------------------------------------------------------------------------
@@ -565,9 +574,9 @@ class Agent:
                 return "Error: คำสั่งอันตรายถูกบล็อกในโหมด headless (ตั้ง AUTO_RUN=1 เพื่ออนุญาต)"
         elif not self.auto_run or dangerous:
             console.print(Text(f"Shell: {command}", style="cyan"))
-            ans = input("  รัน? [y/N/e=แก้ไข] ").strip().lower()
+            ans = _safe_input("  รัน? [y/N/e=แก้ไข] ").strip().lower()
             if ans in ("e", "edit"):
-                return self.shell(input("  พิมพ์คำสั่งใหม่: ").strip(), timeout, run_in_background)
+                return self.shell(_safe_input("  พิมพ์คำสั่งใหม่: ").strip(), timeout, run_in_background)
             if ans not in ("y", "yes", "1"):
                 return "ปฏิเสธโดยผู้ใช้"
         if run_in_background:
@@ -640,7 +649,7 @@ class Agent:
         self.checkpoint(f"ก่อนเขียน {os.path.basename(path)}")
         self._show_diff(path, old, content)
         if self.interactive and self.confirm_files and os.path.exists(fp):
-            if input("   ยืนยันเขียนทับ? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+            if _safe_input("   ยืนยันเขียนทับ? [y/N] ").strip().lower() not in ("y", "yes", "1"):
                 return "ปฏิเสธโดยผู้ใช้"
         try:
             os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
@@ -666,7 +675,7 @@ class Agent:
         new = old.replace(old_string, new_string)
         self._show_diff(path, old, new)
         if self.interactive and self.confirm_files:
-            if input("   ยืนยันแก้ไฟล์? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+            if _safe_input("   ยืนยันแก้ไฟล์? [y/N] ").strip().lower() not in ("y", "yes", "1"):
                 return "ปฏิเสธโดยผู้ใช้"
         try:
             with open(fp, "w", encoding="utf-8") as f:
@@ -857,6 +866,20 @@ IMPL = {
     "read_job": lambda a, k: k.read_job(**a),
 }
 
+# ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
+_TOOL_FIX_HINT = (
+    "ข้อผิดพลาด: คุณพยายามเรียกใช้เครื่องมือที่ไม่มีในระบบ (เช่น repo_browser, python, "
+    "web_browser) กรุณาใช้เฉพาะเครื่องมือที่กำหนดให้เท่านั้น: shell, read_file, write_file, "
+    "edit_file, list_dir, glob, grep, web_fetch, web_search, set_cwd, ask_user, "
+    "list_jobs, read_job"
+)
+
+
+def _is_tool_validation_err(e) -> bool:
+    s = str(e).lower()
+    return ("tool call validation" in s or "not in request.tools" in s
+            or "unknown tool" in s or "invalid tool" in s)
+
 
 def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
     # ---- Hook: pre_tool ----
@@ -893,12 +916,18 @@ def chat_turn(agent: Agent, user_text: str):
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
     tool_seen = False
+    attempts = 0
+    MAX_ATTEMPTS = 3
     while True:
         try:
             stream = client.chat.completions.create(
                 model=agent.model, messages=agent.messages, tools=TOOLS,
                 tool_choice="auto", temperature=0.5, parallel_tool_calls=False, stream=True)
         except BadRequestError as e:
+            if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
+                attempts += 1
+                agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
+                continue
             return _fallback_turn(agent, e)
         except Exception as e:
             console.print(Text(f"Error: {e}", style="red")); return
@@ -932,8 +961,16 @@ def chat_turn(agent: Agent, user_text: str):
                             if tc.function and tc.function.arguments:
                                 tool_calls[i]["args"] += tc.function.arguments
         except BadRequestError as e:
+            if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
+                attempts += 1
+                agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
+                continue
             return _fallback_turn(agent, e)
         except Exception as e:
+            if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
+                attempts += 1
+                agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
+                continue
             console.print(Text(f"Error: stream {e}", style="red")); return
 
         if any(t.get("name") for t in tool_calls):
@@ -973,6 +1010,8 @@ def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
+    attempts = 0
+    MAX_ATTEMPTS = 3
     while True:
         try:
             stream = client.chat.completions.create(
@@ -980,6 +1019,10 @@ def run_turn_events(agent: Agent, user_text: str):
                 tool_choice="auto", temperature=0.5,
                 parallel_tool_calls=False, stream=True)
         except Exception as e:
+            if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
+                attempts += 1
+                agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
+                continue
             yield {"type": "error", "text": str(e)}
             return
 
@@ -1005,6 +1048,10 @@ def run_turn_events(agent: Agent, user_text: str):
                         if tc.function and tc.function.arguments:
                             tool_calls[i]["args"] += tc.function.arguments
         except Exception as e:
+            if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
+                attempts += 1
+                agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
+                continue
             yield {"type": "error", "text": str(e)}
             return
 
