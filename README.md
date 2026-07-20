@@ -12,7 +12,7 @@ Agent ที่รับคำสั่งภาษาธรรมชาติ �
 ```bash
 codeagentx
 ```
-> ไม่ต้อง cd ไปไหน เพราะ installer ใส่คำสั่ง `codeagentx` ลง PATH ให้แล้ว
+> ไม่ต้อง cd ไปไหน Launcher จะไล่ตาม symlink หาตำแหน่งจริงของ repo เอง (ใช้เครื่องอื่นได้)
 
 หรือเรียกไฟล์โดยตรง:
 ```bash
@@ -23,6 +23,18 @@ python3 /home/it-admin/CodeagentX/codeagentx.py
 ```bash
 codeagentx "สร้างโฟลเดอร์ demo แล้วเขียนสคริปต์ Python พิมพ์สวัสดี และรันมัน"
 ```
+
+---
+
+## 🚀 ฟีเจอร์หลัก (รุ่นล่าสุด)
+- **ความจำข้าม turn** — Agent จำบริบทสนทนาได้ตลอดเซสชัน (มี trimming กันบริบทยาวเกิน และกัน tool-result ลอยๆ)
+- **Streaming จริง** — ตอบสดพร้อมเรนเดอร์ Markdown สดๆ ระหว่างโมเดลพิมพ์ (ไม่รอครบแล้วค่อยแปะ)
+- **UI สไตล์ Claude Code** — ใช้ `⏺` (การกระทำ) กับ `⎿` (ผลลัพธ์) แทน emoji เกิน
+- **Spinner** — "⏳ กำลังคิด…" ระหว่างรอ → "⏳ กำลังเตรียมเครื่องมือ…" ตอนเรียก tool
+- **Diff สี** เขียว/แดง ก่อนยืนยันเขียน/แก้ไฟล์ทุกครั้ง
+- **Syntax highlighting** ตามนามสกุลไฟล์ตอนอ่าน
+- **Banner** แผงเดียวสะอาด
+- **คำสั่งใหม่** `/clear` `/history` `/help` + **arrow-key history ข้ามเซสชัน** (readline)
 
 ---
 
@@ -40,15 +52,14 @@ cp .env.example .env
 |---|---|---|
 | `GROQ_API_KEY` | Key จาก Groq | — |
 | `GROQ_BASE_URL` | Endpoint (ไม่ต้องแก้) | `https://api.groq.com/openai/v1` |
-| `GROQ_MODEL` | โมเดลที่ใช้ | `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | โมเดลที่ใช้ | `openai/gpt-oss-120b` |
 | `AUTO_RUN` | `1`=รัน shell ทันทีไม่ถาม (อันตราย) | `0` |
 | `CONFIRM_FILES` | `0`=เขียนไฟล์ไม่ต้องถาม | `1` |
 | `SHELL_TIMEOUT` | ตัดคำสั่งค้างที่ (วินาที) | `60` |
 
 ### เปลี่ยนโมเดลตัวแรง
 แก้ `GROQ_MODEL` ใน `.env` หรือพิมพ์ `/model <ชื่อ>` ในแชท โมเดลที่ใช้ได้บน Groq:
-- `llama-3.3-70b-versatile` (ค่าเริ่มต้น แนะนำ)
-- `openai/gpt-oss-120b` (ทรงพลังมาก)
+- `openai/gpt-oss-120b` (ค่าเริ่มต้น แนะนำ — llama-3.3-70b-versatile ถูก Groq ประกาศเลิกใช้ 16 ส.ค. 2026)
 - `qwen/qwen3.6-27b`
 - `groq/compound`
 
@@ -58,9 +69,9 @@ cp .env.example .env
 | เครื่องมือ | ทำอะไร |
 |---|---|
 | `shell` | รันคำสั่ง bash บนเครื่อง |
-| `read_file` | อ่านไฟล์ |
-| `write_file` | สร้าง/เขียนทับไฟล์ |
-| `edit_file` | แก้ข้อความในไฟล์ (search & replace) |
+| `read_file` | อ่านไฟล์ (syntax highlight) |
+| `write_file` | สร้าง/เขียนทับไฟล์ (แสดง diff ก่อน) |
+| `edit_file` | แก้ข้อความในไฟล์ (search & replace, แสดง diff ก่อน) |
 | `list_dir` | แสดงไฟล์ในโฟลเดอร์ |
 | `glob` | หาไฟล์ตามรูปแบบ `*.py` |
 | `grep` | ค้นหาข้อความ (regex) |
@@ -73,17 +84,19 @@ cp .env.example .env
 ตัวนี้รันคำสั่งบนเครื่องคุณได้จริง จึงมีระบบป้องกัน:
 - **ขออนุมัติก่อนรัน shell** — แสดงคำสั่ง ถาม `รัน? [y/N/e=แก้ไข]` (พิมพ์ `e` แก้ก่อนรัน)
 - **กันคำสั่งอันตราย** — `rm -rf`, `dd`, `shutdown` ฯลฯ เตือน + ขออนุมัติเสมอ
-- **ขออนุมัติก่อนเขียน/แก้ไฟล์**
+- **ขออนุมัติก่อนเขียน/แก้ไฟล์** (แสดง diff สี)
 - หากโมเดล生成 tool call พัง ระบบจะขอคำตอบแบบปกติแทน (ไม่ crash)
 
 ---
 
 ## ⌨️ คำสั่งในแชท
+- `/help` — แสดงคำสั่งทั้งหมด
+- `/clear` — ล้างประวัติการสนทนา
+- `/history` — แสดงประวัติข้อความทั้งหมด
 - `/approve on` — รัน shell ทันทีโดยไม่ถาม (เร็วแต่ระวัง)
 - `/approve off` — กลับไปถามก่อนรัน (ค่าเริ่มต้น แนะนำ)
 - `/cwd <โฟลเดอร์>` — เปลี่ยนที่ทำงาน
 - `/model <ชื่อ>` — เปลี่ยนโมเดล
-- `/tools` — ดูเครื่องมือ
 - `/exit` — ออก
 
 ---
@@ -94,10 +107,12 @@ git clone https://github.com/Zedxv55/CodeagentX.git
 cd CodeagentX
 pip install -r requirements.txt
 cp .env.example .env        # แล้วใส่ GROQ_API_KEY
-# ติดตั้งคำสั่ง codeagentx ลง PATH:
-sudo cp codeagentx /usr/local/bin/codeagentx && sudo chmod +x /usr/local/bin/codeagentx
-# หรือคัดลอกไป ~/bin ก็ได้
+# ติดตั้งคำสั่ง codeagentx ลง PATH ด้วย symlink (แนะนำ เพราะ launcher ตาม symlink ได้):
+ln -s "$(pwd)/codeagentx" ~/.local/bin/codeagentx
+# หรือถ้าใช้ /usr/local/bin:
+# sudo ln -s "$(pwd)/codeagentx" /usr/local/bin/codeagentx
 ```
+> ใช้ `ln -s` ไม่ใช่ `cp` เพื่อให้ launcher ไล่ตาม symlink หาโฟลเดอร์ repo จริงได้ แม้ย้าย/ลิงก์ข้ามที่
 
 ---
 

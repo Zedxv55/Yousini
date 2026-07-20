@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# CodeagentX launcher — พิมพ์ 'codeagentx' ในเทอร์มินอลเพื่อเปิด Agent
-AGENT_DIR="/home/it-admin/CodeagentX"
+# CodeagentX launcher — พิมพ์ 'codeagentx' เพื่อเปิด Agent
+# ไล่ตาม symlink หาตำแหน่งจริงของ repo (แบบเดียวกับ nvm/tools) ใช้เครื่องอื่นได้
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+AGENT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 cd "$AGENT_DIR" || exit 1
 exec python3 "$AGENT_DIR/codeagentx.py" "$@"

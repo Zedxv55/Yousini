@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CodeagentX — Local Coding Agent สไตล์ Claude Code
-รันคำสั่งบนเครื่องจริงได้: shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์ เหมือน Claude Code
-รองรับ Groq (OpenAI-compatible) + เลือกโมเดลตัวแรงได้
+CodeagentX — Local Coding Agent สไตล์ Claude Code (บน Groq)
+รับคำสั่งภาษาธรรมชาติ ทำงานบนเครื่องจริงได้: shell / อ่าน-เขียน-แก้ไฟล์ / ค้นหา
+ฟีเจอร์: ความจำข้าม turn · streaming จริง · UI สไตล์ Claude Code (⏺/⎿) ·
+diff สีก่อนเขียน · syntax highlight · spinner · คำสั่ง /clear /history /help
 
 รัน:  codeagentx        (หรือ python3 codeagentx.py)
 """
@@ -12,7 +13,11 @@ import os
 import sys
 import json
 import re
+import readline
+import atexit
 import subprocess
+import difflib
+from pathlib import Path
 
 # ---- โหลด .env เอง (ไม่พึ่งพา python-dotenv) ----
 def _load_env(path=".env"):
@@ -31,19 +36,26 @@ def _load_env(path=".env"):
 
 _load_env()
 
-from openai import OpenAI
-from openai import BadRequestError
+from openai import OpenAI, BadRequestError
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.syntax import Syntax
+from rich.live import Live
+from rich.text import Text
+from rich.panel import Panel
+
+console = Console()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 AUTO_RUN = os.getenv("AUTO_RUN", "0") == "1"
 CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 if not GROQ_API_KEY:
-    print("❌ ไม่พบ GROQ_API_KEY โปรดคัดลอก .env.example เป็น .env แล้วใส่ key")
+    console.print(Text("❌ ไม่พบ GROQ_API_KEY โปรดคัดลอก .env.example เป็น .env แล้วใส่ key", style="red"))
     sys.exit(1)
 
 client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
@@ -61,15 +73,12 @@ def is_dangerous(cmd: str) -> bool:
     return any(r.search(cmd) for r in DANGER_RE)
 
 
-def _truncate(s: str, n: int = 8000) -> str:
+def _truncate(s: str, n: int = 4000) -> str:
     if len(s) > n:
         return s[:n] + f"\n…(ตัด remaining {len(s) - n} ตัวอักษร)"
     return s
 
 
-# ===========================================================================
-# SKILL — ความสามารถสไตล์ Claude Code (บันทึกใน SKILL.md ด้วย สำหรับ copy/วาง)
-# ===========================================================================
 SYSTEM_PROMPT = """คุณคือ CodeagentX — Local Coding Agent ที่ทำงานบนเครื่องของผู้ใช้ แบบเดียวกับ Claude Code
 คุณสามารถรันคำสั่ง shell, อ่าน/เขียน/แก้ไฟล์ และค้นหาไฟล์ได้ด้วยตนเอง
 
@@ -92,23 +101,55 @@ SYSTEM_PROMPT = """คุณคือ CodeagentX — Local Coding Agent ที�
 5. ห้ามรันคำสั่งอันตราย (rm -rf, dd, shutdown ฯลฯ) โดยไม่ได้รับอนุญาต
 6. เมื่อเห็นผลจากเครื่องมือแล้ว ให้นำไปใช้ต่อ ห้ามเรียก ask_user ถามผลที่ตนเห็นอยู่แล้ว
 7. เมื่องานเสร็จ ให้สรุปสั้นๆ เป็นภาษาไทย พร้อมบอกไฟล์/คำสั่งที่ทำไป
-8. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่คุณตรวจสอบเองได้"""
+8. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้"""
 
 
+# ---------------------------------------------------------------------------
+# Lexer map สำหรับ syntax highlighting
+# ---------------------------------------------------------------------------
+LEX = {"py": "python", "js": "javascript", "ts": "typescript", "tsx": "tsx",
+       "jsx": "jsx", "json": "json", "md": "markdown", "sh": "bash",
+       "yml": "yaml", "yaml": "yaml", "html": "html", "css": "css",
+       "java": "java", "go": "go", "rs": "rust", "c": "c", "cpp": "cpp",
+       "txt": "text", "toml": "toml", "sql": "sql"}
+
+
+def _lexer_for(p: str) -> str:
+    ext = p.rsplit(".", 1)[-1].lower() if "." in p else "text"
+    return LEX.get(ext, "text")
+
+
+# ---------------------------------------------------------------------------
+# Agent — ความจำ (messages) อยู่ใน object คงอยู่ข้าม turn
+# ---------------------------------------------------------------------------
 class Agent:
     def __init__(self, model=GROQ_MODEL, cwd=os.getcwd()):
         self.model = model
         self.cwd = os.path.abspath(cwd)
         self.auto_run = AUTO_RUN
         self.confirm_files = CONFIRM_FILES
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # ---- trimming: ตัดที่ user-boundary เท่านั้น ไม่ให้เหลือ tool-result ลอยๆ ----
+    def _trim(self, max_msgs=40):
+        if len(self.messages) <= max_msgs:
+            return
+        sys0 = self.messages[0]
+        conv = self.messages[1:]
+        cuts = [i for i, m in enumerate(conv) if m["role"] == "user"]
+        while len(conv) > max_msgs - 1 and len(cuts) > 1:
+            drop = cuts[1]            # ตัด segment แรก [0 .. cuts[1])
+            conv = conv[drop:]
+            cuts = [i - drop for i in cuts[1:]]
+        self.messages = [sys0] + conv
 
     # ---- Shell ----
     def shell(self, command: str, timeout: int = None) -> str:
         dangerous = is_dangerous(command)
         if dangerous:
-            print(f"  ⚠️  คำสั่งเสี่ยงสูง: {command}")
+            console.print(Text(f"  ⚠️  คำสั่งเสี่ยงสูง: {command}", style="yellow"))
         if not self.auto_run or dangerous:
-            print(f"  🖥️  คำสั่ง: {command}")
+            console.print(Text(f"  🖥️  คำสั่ง: {command}", style="cyan"))
             ans = input("     รัน? [y/N/e=แก้ไข] ").strip().lower()
             if ans in ("e", "edit"):
                 return self.shell(input("     พิมพ์คำสั่งใหม่: ").strip(), timeout)
@@ -129,6 +170,26 @@ class Agent:
     def _resolve(self, path):
         return path if os.path.isabs(path) else os.path.join(self.cwd, path)
 
+    def _show_diff(self, path, old, new):
+        if old is None:
+            console.print(Panel(
+                Syntax(new, _lexer_for(path), theme="github-dark", word_wrap=True),
+                title=f"สร้างไฟล์: {path}", border_style="green"))
+            return
+        diff = difflib.unified_diff(old.splitlines(), new.splitlines(),
+                                    fromfile="เดิม", tofile="ใหม่", lineterm="")
+        t = Text()
+        for line in diff:
+            if line.startswith("+") and not line.startswith("+++"):
+                t.append(line + "\n", style="green")
+            elif line.startswith("-") and not line.startswith("---"):
+                t.append(line + "\n", style="red")
+            elif line.startswith(("@@", "+++", "---")):
+                t.append(line + "\n", style="bold cyan")
+            else:
+                t.append(line + "\n", style="dim")
+        console.print(Panel(t, title=f"แก้ไฟล์: {path}", border_style="yellow"))
+
     def read_file(self, path: str, limit: int = 0) -> str:
         fp = self._resolve(path)
         if not os.path.isfile(fp):
@@ -136,17 +197,25 @@ class Agent:
         try:
             with open(fp, "r", encoding="utf-8", errors="replace") as f:
                 data = f.read()
-            if limit and limit > 0:
-                data = "\n".join(data.splitlines()[:limit])
+            shown = "\n".join(data.splitlines()[:limit]) if limit and limit > 0 else data
+            console.print(Panel(
+                Syntax(shown, _lexer_for(fp), theme="github-dark", word_wrap=True),
+                title=f"อ่าน: {fp}", border_style="blue"))
             return _truncate(data)
         except Exception as e:
             return f"❌ อ่านไม่ได้: {e}"
 
     def write_file(self, path: str, content: str) -> str:
         fp = self._resolve(path)
-        if os.path.exists(fp) and self.confirm_files:
-            print(f"  ✏️  จะเขียนทับ: {fp}")
-            if input("     ยืนยัน? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+        old = None
+        if os.path.isfile(fp):
+            try:
+                old = open(fp, "r", encoding="utf-8").read()
+            except Exception:
+                old = ""
+        self._show_diff(path, old, content)
+        if self.confirm_files and os.path.exists(fp):
+            if input("   ยืนยันเขียนทับ? [y/N] ").strip().lower() not in ("y", "yes", "1"):
                 return "❌ ไม่อนุญาต"
         try:
             os.makedirs(os.path.dirname(fp) or ".", exist_ok=True)
@@ -160,20 +229,21 @@ class Agent:
         fp = self._resolve(path)
         if not os.path.isfile(fp):
             return f"❌ ไม่พบไฟล์: {fp}"
+        try:
+            old = open(fp, "r", encoding="utf-8").read()
+        except Exception as e:
+            return f"❌ อ่านไม่ได้: {e}"
+        if old_string not in old:
+            return "❌ ไม่พบ old_string ในไฟล์"
+        new = old.replace(old_string, new_string)
+        self._show_diff(path, old, new)
         if self.confirm_files:
-            print(f"  ✏️  จะแก้ไฟล์: {fp}")
-            if input("     ยืนยัน? [y/N] ").strip().lower() not in ("y", "yes", "1"):
+            if input("   ยืนยันแก้ไฟล์? [y/N] ").strip().lower() not in ("y", "yes", "1"):
                 return "❌ ไม่อนุญาต"
         try:
-            with open(fp, "r", encoding="utf-8") as f:
-                data = f.read()
-            if old_string not in data:
-                return "❌ ไม่พบ old_string ในไฟล์"
-            cnt = data.count(old_string)
-            data = data.replace(old_string, new_string)
             with open(fp, "w", encoding="utf-8") as f:
-                f.write(data)
-            return f"✅ แก้สำเร็จ: {fp} ({cnt} แห่ง)"
+                f.write(new)
+            return f"✅ แก้สำเร็จ: {fp} ({old.count(old_string)} แห่ง)"
         except Exception as e:
             return f"❌ แก้ไม่ได้: {e}"
 
@@ -194,8 +264,8 @@ class Agent:
         if not os.path.isdir(base):
             return f"❌ ไม่พบโฟลเดอร์: {base}"
         try:
-            hits = [os.path.join(r, fn) for r, _, fs in os.walk(base) for fn in fs
-                    if fnmatch.fnmatch(fn, pattern)]
+            hits = [os.path.join(r, fn) for r, _, fs in os.walk(base)
+                    for fn in fs if fnmatch.fnmatch(fn, pattern)]
             return "\n".join(hits[:200]) if hits else "❌ ไม่พบ"
         except Exception as e:
             return f"❌: {e}"
@@ -237,15 +307,16 @@ class Agent:
         return f"📂 เปลี่ยนโฟลเดอร์เป็น: {self.cwd}"
 
     def ask_user(self, question: str) -> str:
+        console.print(Text(f"❓ Agent ถาม: {question}", style="yellow"))
         try:
-            return input(f"  ❓ Agent ถาม: {question} ").strip()
+            return input("❓ ตอบ: ").strip()
         except EOFError:
             return "(ไม่มีคำตอบ — โหมดไม่โต้ตอบ)"
 
 
 TOOLS = [
     {"type": "function", "function": {"name": "shell", "description": "รันคำสั่ง bash บนเครื่อง (ls, python3, pip install, git, สร้างโปรเจกต์)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["command"]}}},
-    {"type": "function", "function": {"name": "read_file", "description": "อ่านไฟล์ข้อความ", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "read_file", "description": "อ่านไฟล์ข้อความ (มี syntax highlighting)", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "write_file", "description": "สร้าง/เขียนทับไฟล์", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "edit_file", "description": "แทนที่ old_string ด้วย new_string ในไฟล์", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "list_dir", "description": "แสดงไฟล์ในโฟลเดอร์", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
@@ -264,88 +335,200 @@ IMPL = {
 }
 
 
-def run_agent(agent: Agent, user_input: str) -> str:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_input}]
-    for _ in range(20):
+def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
+    shown = args.get("command", "") if name == "shell" else args
+    if not isinstance(shown, str):
+        shown = json.dumps(shown, ensure_ascii=False)
+    console.print(Text(f"⏺ {name}({shown})", style="bold cyan"))
+    result = IMPL[name](args, agent)
+    console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style="dim"))
+    agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
+
+
+def _fallback_turn(agent: Agent, err):
+    """จับเหตุการณ์โมเดล生成พัง → ขอคำตอบแบบปกติไม่ใช้ tools"""
+    console.print(Text("⚠️  โมเดลสร้างคำตอบไม่ถูกต้อง กำลังขอคำตอบแบบปกติ…", style="yellow"))
+    try:
+        resp = client.chat.completions.create(
+            model=agent.model, messages=agent.messages, tools=[], temperature=0.5)
+        ans = resp.choices[0].message.content or "(โมเดลไม่ตอบ)"
+        agent.messages.append({"role": "assistant", "content": ans})
+        console.print(Markdown(ans))
+    except Exception as e2:
+        console.print(Text(f"❌: {e2}", style="red"))
+
+
+def chat_turn(agent: Agent, user_text: str):
+    """หนึ่งรอบสนทนา: ต่อความจำเดิม + streaming + tool loop"""
+    agent.messages.append({"role": "user", "content": user_text})
+    agent._trim()
+    while True:
         try:
-            resp = client.chat.completions.create(
-                model=agent.model, messages=messages, tools=TOOLS,
-                tool_choice="auto", temperature=0.5, parallel_tool_calls=False)
+            stream = client.chat.completions.create(
+                model=agent.model, messages=agent.messages, tools=TOOLS,
+                tool_choice="auto", temperature=0.5, parallel_tool_calls=False, stream=True)
         except BadRequestError as e:
-            # โมเดล生成 tool call พัง (เช่น รูปแบบผิด) → ขอคำตอบแบบปกติไม่ใช้ tools
-            err = str(e)
-            if "tool_use_failed" in err or "Failed to call a function" in err:
-                print("  ⚠️ โมเดลสร้าง tool call ไม่ถูกต้อง กำลังขอคำตอบแบบปกติ...")
+            return _fallback_turn(agent, e)
+        except Exception as e:
+            console.print(Text(f"❌: {e}", style="red")); return
+
+        content = []
+        tool_calls = []
+
+        def render():
+            if not content:
+                return Text("⏳ กำลังคิด…", style="dim")
+            return Markdown("".join(content))
+
+        try:
+            with Live(render(), console=console, refresh_per_second=12) as live:
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    d = chunk.choices[0].delta
+                    if d.content:
+                        content.append(d.content)
+                        live.update(render())
+                    if d.tool_calls:
+                        for tc in d.tool_calls:
+                            i = tc.index or 0
+                            while len(tool_calls) <= i:
+                                tool_calls.append({"id": "", "name": "", "args": ""})
+                            if tc.id:
+                                tool_calls[i]["id"] = tc.id
+                            if tc.function and tc.function.name:
+                                tool_calls[i]["name"] += tc.function.name
+                            if tc.function and tc.function.arguments:
+                                tool_calls[i]["args"] += tc.function.arguments
+        except BadRequestError as e:
+            return _fallback_turn(agent, e)
+        except Exception as e:
+            console.print(Text(f"❌ stream: {e}", style="red")); return
+
+        # มีการเรียกเครื่องมือ → รันแล้ววนลูปต่อ
+        if any(t.get("name") for t in tool_calls):
+            console.print(Text("⏳ กำลังเตรียมเครื่องมือ…", style="dim"))
+            asst = {"role": "assistant", "content": "".join(content)}
+            asst["tool_calls"] = [
+                {"id": t["id"], "type": "function",
+                 "function": {"name": t["name"], "arguments": t["args"]}}
+                for t in tool_calls if t["name"]]
+            agent.messages.append(asst)
+            for t in tool_calls:
+                if not t["name"]:
+                    continue
                 try:
-                    resp = client.chat.completions.create(
-                        model=agent.model, messages=messages, tools=[], temperature=0.5)
-                    return resp.choices[0].message.content or "(โมเดลไม่ตอบ)"
-                except Exception:
-                    return "❌ ไม่สามารถประมวลผลคำสั่งนี้ได้ โปรดลองพิมพ์ใหม่"
-            return f"❌ คำขอไม่ถูกต้อง: {e}"
-        msg = resp.choices[0].message
-        if not msg.tool_calls:
-            return msg.content or ""
-        messages.append({"role": "assistant", "content": msg.content or "",
-                         "tool_calls": [{"id": tc.id, "type": "function",
-                                         "function": {"name": tc.function.name,
-                                                      "arguments": tc.function.arguments}}
-                                        for tc in msg.tool_calls]})
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            if not isinstance(args, dict):
-                args = {}
-            shown = args.get("command", "") if name == "shell" else args
-            print(f"  🔧 {name}({shown})")
-            result = IMPL[name](args, agent)
-            print(f"  👀 {result[:600]}")
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
-    return "⚠️ วนลูปเกินจำกัด กรุณาลองใหม่"
+                    args = json.loads(t["args"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                _exec_tool(agent, t["name"], args, t["id"])
+            continue
+
+        # ไม่มีเครื่องมือ → จบรอบนี้
+        ans = "".join(content)
+        agent.messages.append({"role": "assistant", "content": ans})
+        console.print()
+        return
+
+
+# ---------------------------------------------------------------------------
+# REPL + readline history ข้ามเซสชัน
+# ---------------------------------------------------------------------------
+HIST_FILE = Path.home() / ".codeagentx_history"
+
+
+def _setup_readline():
+    try:
+        readline.read_history_file(HIST_FILE)
+    except FileNotFoundError:
+        pass
+    readline.set_history_length(2000)
+    atexit.register(lambda: readline.write_history_file(HIST_FILE))
+
+
+def _print_banner(agent: Agent):
+    txt = Text()
+    txt.append("CodeagentX", style="bold cyan")
+    txt.append("  —  Local Coding Agent สไตล์ Claude Code\n\n", style="dim")
+    txt.append(f"โมเดล: ", style="dim"); txt.append(agent.model + "\n", style="bold")
+    txt.append(f"โฟลเดอร์: ", style="dim"); txt.append(agent.cwd + "\n", style="dim")
+    txt.append(f"ขออนุมัติ shell: ", style="dim")
+    txt.append("ปิด (รันทันที)" if agent.auto_run else "เปิด (ถามก่อน)", style="yellow")
+    txt.append("\nพิมพ์งาน  |  /help /clear /history /model /cwd /approve /exit", style="dim")
+    console.print(Panel(txt, border_style="cyan", padding=(1, 2)))
+
+
+def _print_help():
+    lines = [
+        ("/help", "แสดงคำสั่งนี้"),
+        ("/clear", "ล้างประวัติการสนทนา"),
+        ("/history", "แสดงประวัติข้อความทั้งหมด"),
+        ("/model <ชื่อ>", "เปลี่ยนโมเดล เช่น /model llama-3.3-70b-versatile"),
+        ("/cwd <โฟลเดอร์>", "เปลี่ยนโฟลเดอร์ทำงาน"),
+        ("/approve on|off", "รัน shell อัตโนมัติโดยไม่ถาม"),
+        ("/exit, /quit", "ออก"),
+    ]
+    t = Text()
+    for cmd, desc in lines:
+        t.append("  " + cmd + "\n", style="bold cyan")
+        t.append("     " + desc + "\n", style="dim")
+    console.print(Panel(t, title="คำสั่ง", border_style="cyan"))
+
+
+def _print_history(agent: Agent):
+    t = Text()
+    for m in agent.messages:
+        role = m["role"]
+        c = m.get("content") or ""
+        if role == "system":
+            continue
+        if role == "tool":
+            c = f"[tool-result] {c[:200]}"
+            style = "dim"
+        elif role == "assistant":
+            style = "green"
+        else:
+            style = "bold"
+        t.append(f"[{role}] ", style="bold magenta")
+        t.append(_truncate(c, 400) + "\n\n", style=style)
+    console.print(Panel(t, title=f"ประวัติ ({len(agent.messages)} ข้อความ)", border_style="cyan"))
 
 
 def main():
     agent = Agent()
     if len(sys.argv) > 1:
-        user_input = " ".join(sys.argv[1:])
-        print(f"\n🧑 คุณ: {user_input}")
-        print(f"🤖 CodeagentX ({agent.model}):")
-        print(run_agent(agent, user_input))
+        chat_turn(agent, " ".join(sys.argv[1:]))
         return
 
-    print("=" * 64)
-    print(f"🤖 CodeagentX  (Claude Code-style)  โมเดล: {agent.model}")
-    print(f"📂 โฟลเดอร์: {agent.cwd}")
-    print(f"🔐 ขออนุมัติ shell: {'ปิด (รันทันที)' if agent.auto_run else 'เปิด (ถามก่อน)'}")
-    print("   พิมพ์งาน  |  /model <ชื่อ>  /cwd <โฟลเดอร์>  /approve on|off  /tools  /exit")
-    print("=" * 64)
+    _setup_readline()
+    _print_banner(agent)
     while True:
         try:
-            user_input = input("\n🧑 คุณ > ").strip()
+            user_input = input("❯ ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n👋 ลาก่อน!"); break
+            console.print(Text("\n👋 ลาก่อน!", style="dim")); break
         if not user_input:
             continue
-        if user_input.lower() in ("/exit", "/quit", "exit", "quit"):
-            print("👋 ลาก่อน!"); break
-        if user_input.lower() == "/tools":
-            print("   ", ", ".join(IMPL.keys())); continue
+        if user_input.lower() in ("/exit", "/quit"):
+            console.print(Text("👋 ลาก่อน!", style="dim")); break
+        if user_input.lower() == "/help":
+            _print_help(); continue
+        if user_input.lower() == "/clear":
+            agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            console.print(Text("🧹 เคลียร์ประวัติแล้ว", style="yellow")); continue
+        if user_input.lower() == "/history":
+            _print_history(agent); continue
         if user_input.lower().startswith("/model "):
-            agent.model = user_input[7:].strip(); print(f"   ✅ โมเดล: {agent.model}"); continue
+            agent.model = user_input[7:].strip()
+            console.print(Text(f"✅ โมเดล: {agent.model}", style="green")); continue
         if user_input.lower().startswith("/cwd "):
-            print("   " + agent.set_cwd(user_input[5:].strip())); continue
+            console.print(Text(agent.set_cwd(user_input[5:].strip()), style="yellow")); continue
         if user_input.lower().startswith("/approve "):
             agent.auto_run = user_input[9:].strip().lower() in ("on", "1", "true")
-            print(f"   🔐 รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}"); continue
-        print(f"🤖 CodeagentX ({agent.model}):")
-        try:
-            print(run_agent(agent, user_input))
-        except Exception as e:
-            print(f"❌: {e}")
+            console.print(Text(f"🔐 รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
+        chat_turn(agent, user_input)
 
 
 if __name__ == "__main__":
