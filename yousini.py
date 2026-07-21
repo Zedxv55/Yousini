@@ -51,7 +51,98 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
 
+# ============================================================
+# THEME SYSTEM - ระบบธีมสวยงาม
+# ============================================================
+THEMES = {
+    "dark": {
+        "bg": "#05060a", "panel": "rgba(18,20,32,.68)", "ink": "#eef1ff",
+        "brand1": "#7c5cff", "brand2": "#18d3ff", "brand3": "#ff5cae",
+        "ok": "#3ddc97", "warn": "#ffcf5c", "danger": "#ff6b6b"
+    },
+    "notion": {
+        "bg": "#ffffff", "panel": "rgba(240,240,242,.8)", "ink": "#191919",
+        "brand1": "#0070ec", "brand2": "#4dccff", "brand3": "#ff6b6b",
+        "ok": "#22c55e", "warn": "#f59e0b", "danger": "#ef4444"
+    },
+    "nord": {
+        "bg": "#24283b", "panel": "rgba(42,46,66,.7)", "ink": "#d8dee9",
+        "brand1": "#8aadf4", "brand2": "#7dcfff", "brand3": "#f5a97f",
+        "ok": "#8ccf7e", "warn": "#e2b768", "danger": "#e06e63"
+    },
+    "tokyo-night": {
+        "bg": "#1a1b26", "panel": "rgba(36,40,59,.7)", "ink": "#c0caf5",
+        "brand1": "#bb9af7", "brand2": "#7aa2f7", "brand3": "#ff9e6d",
+        "ok": "#9ece6a", "warn": "#e0af68", "danger": "#f7768e"
+    }
+}
+
+CURRENT_THEME = os.getenv("YOUSINI_THEME", "dark")
+
+# ============================================================
+
+
 console = Console()
+
+
+# ============================================================
+# LOGIN MANAGER - จัดการการเข้าสู่ระบบและการเก็บ credentials
+# ============================================================
+CONFIG_DIR = Path.home() / ".yousini"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+GITHUB_TOKEN_FILE = CONFIG_DIR / "github_token"
+
+
+def load_config():
+    CONFIG_DIR.mkdir(exist_ok=True)
+    try:
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except:
+        return {"providers": {}, "theme": CURRENT_THEME, "github_token": None}
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# โหลด config และอัปเดต env vars ถ้ามี
+_cfg = load_config()
+if "providers" in _cfg and "default" in _cfg["providers"]:
+    DEFAULT_PROVIDER = _cfg["providers"]["default"]
+    for key in ["API_KEY", "BASE_URL", "MODEL"]:
+        val = DEFAULT_PROVIDER.get(key.replace("YOUSINI_", ""))
+        if val:
+            os.environ[f"YOUSINI_{key}"] = val
+
+
+def save_provider(name: str, api_key: str, base_url: str, model: str):
+    cfg = load_config()
+    cfg["providers"] = cfg.get("providers", {})
+    cfg["providers"][name] = {"api_key": api_key, "base_url": base_url, "model": model}
+    cfg["default_provider"] = name
+    save_config(cfg)
+
+
+# ============================================================
+# ANIMATION HELPERS - อนิเมชั่นน่ารัก
+# ============================================================
+ANIMATION_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+def animated_thinking(message="กำลังคิด"):
+    """สร้าง animation frame สำหรับ thinking"""
+    for frame in ANIMATION_FRAMES * 3:
+        yield f"{frame} {message}..."
+
+
+def print_animated(text: str, style: str = "green", speed: float = 0.02):
+    """พิมพ์ข้อความแบบ animation ตัวอักษรสไตล์ typewriter"""
+    import time
+    for char in text:
+        console.print(char, end="", style=style)
+        time.sleep(speed)
+    console.print()
 
 # ---- Config: รองรับทุก OpenAI-compatible API ----
 # อ่าน YOUSINI_* ก่อน ถ้าไม่มีตกไปใช้ ZELAX_* แล้ว GROQ_* (เข้ากันได้กับของเดิม)
@@ -153,15 +244,16 @@ def _lexer_for(p: str) -> str:
 # ---------------------------------------------------------------------------
 class Agent:
     def __init__(self, model=MODEL, cwd=os.getcwd(), interactive=True,
-                 allow_shell=True, allow_write=True):
+                 allow_shell=True, allow_write=True, sandbox_enabled=False, sandbox_tool=None):
         self.model = model
         self.cwd = os.path.abspath(cwd)
         self.auto_run = AUTO_RUN
         self.confirm_files = CONFIRM_FILES
-        # interactive=False → โหมด server/headless: ไม่ถามผ่าน input()
         self.interactive = interactive
-        self.allow_shell = allow_shell   # ปิดได้เพื่อเซิร์ฟเวอร์แบบ read-only
+        self.allow_shell = allow_shell
         self.allow_write = allow_write
+        self.sandbox_enabled = sandbox_enabled
+        self.sandbox_tool = sandbox_tool  # "bwrap" หรือ "firejail"
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     # ---- trimming: ตัดที่ user-boundary เท่านั้น ไม่ให้เหลือ tool-result ลอยๆ ----
@@ -181,14 +273,18 @@ class Agent:
     def shell(self, command: str, timeout: int = None) -> str:
         if not self.allow_shell:
             return "Error: shell ถูกปิดในโหมดนี้ (read-only server)"
+
+        # เช็ค prefix allow-list ก่อนขออนุมัติ
+        allowed_prefix = is_shell_allowed(command)
+
         dangerous = is_dangerous(command)
         if dangerous:
             console.print(Text(f"คำเตือน: คำสั่งเสี่ยงสูง: {command}", style="yellow"))
         if not self.interactive:
-            # โหมด headless/server: ห้ามคำสั่งอันตรายเด็ดขาด นอกจาก auto_run
-            if dangerous and not self.auto_run:
-                return "Error: คำสั่งอันตรายถูกบล็อกในโหมด headless (ตั้ง AUTO_RUN=1 เพื่ออนุญาต)"
-        elif not self.auto_run or dangerous:
+            # โหมด headless/server: ห้ามคำสั่งอันตรายเด็ดขาด นอกจาก auto_run หรืออยู่ใน allow-list
+            if dangerous and not self.auto_run and not allowed_prefix:
+                return "Error: คำสั่งอันตรายถูกบล็อกในโหมด headless (ใช้ /permission add เพื่ออนุญาต prefix)"
+        elif not self.auto_run and not allowed_prefix or dangerous:
             console.print(Text(f"Shell: {command}", style="cyan"))
             ans = input("  รัน? [y/N/e=แก้ไข] ").strip().lower()
             if ans in ("e", "edit"):
@@ -197,8 +293,23 @@ class Agent:
                 return "ปฏิเสธโดยผู้ใช้"
         try:
             t = timeout or SHELL_TIMEOUT
-            proc = subprocess.Popen(["bash", "-c", command], cwd=self.cwd,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            # ---- Sandbox wrapper ----
+            if self.sandbox_enabled and self.sandbox_tool:
+                if self.sandbox_tool == "bwrap":
+                    # bubblewrap: --ro-bind / --tmpfs /tmp, จำกัด root
+                    cmd_exe = ["bwrap", "--ro-bind", "/", "/",
+                               "--bind", self.cwd, self.cwd,
+                               "--tmpfs", "/tmp",
+                               "--unshare-all", "--die-with-parent",
+                               "bash", "-c", command]
+                else:  # firejail
+                    cmd_exe = ["firejail", "--private", "--net=none",
+                               "--whitelist=" + self.cwd, "bash", "-c", command]
+                proc = subprocess.Popen(cmd_exe, cwd=self.cwd,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            else:
+                proc = subprocess.Popen(["bash", "-c", command], cwd=self.cwd,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             out, _ = proc.communicate(timeout=t)
             return _truncate(f"[exit code: {proc.returncode}]\n{out or '(ไม่มีผลลัพธ์)'}")
         except subprocess.TimeoutExpired:
@@ -411,6 +522,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "web_search", "description": "ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์) คืนรายการผลลัพธ์", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้นหา"}, "max_results": {"type": "integer", "description": "จำนวนผลลัพธ์ (ค่าเริ่มต้น 5)"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "set_cwd", "description": "เปลี่ยนโฟลเดอร์ทำงาน", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "ask_user", "description": "ถามผู้ใช้เฉพาะเมื่อขาดข้อมูลสำคัญจริงๆ เท่านั้น", "parameters": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}}},
+    {"type": "function", "function": {"name": "spawn_agents", "description": "รันหลาย subagent พร้อมกัน - รับ list ของ task", "parameters": {"type": "object", "properties": {"tasks": {"type": "array", "description": "รายการ task ที่ต้องการให้ทำ"}, "max_workers": {"type": "integer", "description": "จำนวน thread สูงสุด"}}, "required": ["tasks"]}}},
 ]
 
 IMPL = {
@@ -419,8 +531,18 @@ IMPL = {
     "list_dir": lambda a, k: k.list_dir(**a), "glob": lambda a, k: k.glob(**a),
     "grep": lambda a, k: k.grep(**a), "web_fetch": lambda a, k: k.web_fetch(**a),
     "web_search": lambda a, k: k.web_search(**a), "set_cwd": lambda a, k: k.set_cwd(**a),
-    "ask_user": lambda a, k: k.ask_user(**a),
+    "ask_user": lambda a, k: k.ask_user(**a), "spawn_agents": lambda a, k: spawn_agents_tool(a, k)
 }
+
+
+def spawn_agents_tool(args: dict, agent: Agent) -> str:
+    """Tool wrapper สำหรับ spawn_agents - รัน subagent หลายตัวพร้อมกัน"""
+    tasks = args.get("tasks", [])
+    if not tasks:
+        return "Error: ต้องให้ list ของ task"
+    max_workers = args.get("max_workers", 4)
+    results = spawn_subagents_parallel(tasks, max_workers=max_workers)
+    return "\n".join(f"{r.get('task', 'unnamed')}: {r.get('output', r.get('text', 'error'))[:500]}" for r in results)
 
 
 def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
@@ -519,6 +641,58 @@ def chat_turn(agent: Agent, user_text: str):
             console.rule("คำตอบ Yousini", style="magenta")
         console.print()
         return
+
+
+# ============================================================
+# SUBAGENT SYSTEM - สร้าง agent ย่อยๆ ทำงานแยกกัน
+# ============================================================
+def spawn_subagent(task: dict, parent_agent: Agent = None) -> dict:
+    """สร้าง agent ย่อยทำงานแยกกัน (max 2 nesting levels)"""
+    if parent_agent and getattr(parent_agent, "_nest_level", 0) >= 2:
+        return {"type": "error", "text": "Subagent ซ้อนเกิน 2 ชั้น - ถูกบล็อก"}
+
+    # สร้าง agent ย่อย
+    child = Agent(
+        model=task.get("model", MODEL),
+        cwd=task.get("cwd", os.getcwd()),
+        interactive=False,
+        allow_shell=task.get("allow_shell", True),
+        allow_write=task.get("allow_write", True),
+        sandbox_enabled=task.get("sandbox", False),
+        sandbox_tool=task.get("sandbox_tool")
+    )
+    if parent_agent:
+        child._nest_level = getattr(parent_agent, "_nest_level", 0) + 1
+
+    # ทำคำสั่ง task
+    prompt = task.get("prompt", "")
+    if not prompt:
+        return {"type": "error", "text": "ต้องมี prompt ใน task"}
+
+    # เก็บผลลัพธ์
+    outputs = []
+    for ev in run_turn_events(child, prompt):
+        if ev.get("type") == "tool_result":
+            outputs.append(ev.get("result", ""))
+        elif ev.get("type") == "final":
+            outputs.append(ev.get("text", ""))
+
+    return {"type": "result", "task": task.get("name", "unnamed"), "output": "\n".join(outputs)[:2000]}
+
+
+def spawn_subagents_parallel(tasks: list, max_workers: int = 4) -> list:
+    """รันหลาย subagent พร้อมกัน"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as executor:
+        futures = {executor.submit(spawn_subagent, t): t for t in tasks}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append({"type": "error", "text": str(e)})
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +879,75 @@ def _print_history(agent: Agent):
     console.print(Panel(t, title=f"ประวัติ ({len(agent.messages)} ข้อความ)", border_style="magenta"))
 
 
+# ============================================================
+# PERMISSION SYSTEM - ระบบอนุญาตแบบ granular
+# ============================================================
+def permission_cmd(args: str) -> str:
+    """จัดการ permission prefix allow-list"""
+    parts = args.split()
+    if not parts:
+        return "ใช้: /permission add <prefix> | /permission list | /permission remove <prefix> | /permission clear"
+    cfg = load_config()
+    allow = cfg.get("allow_shell_prefix", [])
+    cmd = parts[0].lower()
+    if cmd == "add" and len(parts) > 1:
+        prefix = parts[1]
+        if prefix not in allow:
+            allow.append(prefix)
+            cfg["allow_shell_prefix"] = allow
+            save_config(cfg)
+            return f"เพิ่ม '{prefix}' เข้า allow-list"
+        return f"'{prefix}' มีอยู่แล้ว"
+    elif cmd == "list":
+        if not allow:
+            return "allow-list ว่าง - คำสั่ง shell ทุกอย่างถามก่อน"
+        return "allow-list:\n" + "\n".join(f"  - {p}" for p in allow)
+    elif cmd == "remove" and len(parts) > 1:
+        prefix = parts[1]
+        if prefix in allow:
+            allow.remove(prefix)
+            cfg["allow_shell_prefix"] = allow
+            save_config(cfg)
+            return f"ลบ '{prefix}' ออกแล้ว"
+        return f"'{prefix}' ไม่มีใน allow-list"
+    elif cmd == "clear":
+        cfg["allow_shell_prefix"] = []
+        save_config(cfg)
+        return "ล้าง allow-list แล้ว"
+    return "ใช้: /permission add <prefix> | /permission list | /permission remove <prefix> | /permission clear"
+
+
+def is_shell_allowed(cmd: str) -> bool:
+    """เช็คว่าคำสั่งอยู่ใน prefix allow-list หรือไม่"""
+    cfg = load_config()
+    allow = cfg.get("allow_shell_prefix", [])
+    if not allow:
+        return False
+    return any(cmd.startswith(p) for p in allow)
+
+
+def _print_help_extended(agent: Agent):
+    """help ที่มี /login /theme /permission /plan เพิ่ม"""
+    t = Text()
+    t.append("คำสั่งใน REPL\n\n", style="bold magenta")
+
+    # คำสั่งพื้นฐาน
+    basic = [(" /help", "แสดงคำสั่งนี้"), ("/clear", "ล้างประวัติ"), ("/history", "แสดงประวัติ"),
+             ("/model", "เปลี่ยนโมเดล"), ("/cwd", "เปลี่ยนโฟลเดอร์"), ("/approve", "รัน/ปิดรันอัตโนมัติ")]
+    for cmd, desc in basic:
+        t.append(f"  {cmd}", style="bold cyan")
+        t.append(f" — {desc}\n", style="dim")
+
+    t.append("\nคำสั่งใหม่\n", style="bold magenta")
+    new_cmds = [("/login", "เข้าสู่ระบบ/เลือก provider"), ("/theme", "เปลี่ยนธีม UI"),
+                ("/permission", "จัดการอนุญาต shell prefix"), ("/plan", "โหมดแผน (วางแผนก่อนทำ)")]
+    for cmd, desc in new_cmds:
+        t.append(f"  {cmd}", style="bold cyan")
+        t.append(f" — {desc}\n", style="dim")
+
+    console.print(Panel(t, title="คำสั่ง Yousini", border_style="magenta"))
+
+
 # ---------------------------------------------------------------------------
 # โหมด SERVER: yousini serve  → เปิดเป็นบริการ (เว็บ UI + API สตรีม SSE)
 # เชื่อมต่อได้ทั้งในเครื่อง (localhost) และออนไลน์ (0.0.0.0 + token)
@@ -718,10 +961,26 @@ def _load_webui():
 
 
 def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
-               allow_shell=True, allow_write=True):
+               allow_shell=True, allow_write=True, sandbox=False):
     import http.server
     import socketserver
     import threading
+
+    # ---- Sandbox setup ----
+    sandbox_available = False
+    sandbox_tool = None
+    if sandbox:
+        import shutil
+        if shutil.which("bwrap"):
+            sandbox_available = True
+            sandbox_tool = "bwrap"
+        elif shutil.which("firejail"):
+            sandbox_available = True
+            sandbox_tool = "firejail"
+        else:
+            console.print(Text("Sandbox ถูกขอแต่ยังไม่มี bwrap/firejail - แสดงคำแนะนำติดตั้ง", style="yellow"))
+            console.print(Text("Ubuntu/Debian: sudo apt install bubblewrap", style="dim"))
+            console.print(Text("Arch: sudo pacman -S bubblewrap", style="dim"))
 
     web_ui = _load_webui()
     sessions = {}          # sid -> Agent
@@ -733,7 +992,9 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             if sid not in sessions:
                 sessions[sid] = Agent(interactive=False,
                                       allow_shell=(allow_shell and not safe),
-                                      allow_write=(allow_write and not safe))
+                                      allow_write=(allow_write and not safe),
+                                      sandbox_enabled=sandbox and sandbox_available,
+                                      sandbox_tool=sandbox_tool)
                 locks[sid] = threading.Lock()
             return sessions[sid], locks[sid]
 
@@ -955,65 +1216,251 @@ def _parse_flags(argv):
     return opts
 
 
-def main():
-    argv = sys.argv[1:]
+# ============================================================
+    # PROVIDER PRESETS - ค่าเริ่มต้นสำหรับแต่ละ provider
+    # ============================================================
+    PROVIDERS = {
+        "groq": {
+            "name": "Groq",
+            "base_url": "https://api.groq.com/openai/v1",
+            "models": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "gemma2-9b-it", "moonshotai/kimi-k2-instruct"]
+        },
+        "openai": {
+            "name": "OpenAI",
+            "base_url": "https://api.openai.com/v1",
+            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1-preview"]
+        },
+        "openrouter": {
+            "name": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "models": ["anthropic/claude-3.5-sonnet", "google/gemini-pro-1.5", "meta-llama/llama-3.3-70b"]
+        },
+        "deepseek": {
+            "name": "DeepSeek",
+            "base_url": "https://api.deepseek.com/v1",
+            "models": ["deepseek-chat", "deepseek-coder"]
+        },
+        "anthropic": {
+            "name": "Anthropic",
+            "base_url": "https://api.anthropic.com/v1",
+            "models": ["claude-opus-4-20250514", "claude-sonnet-4-20250514"]
+        }
+    }
 
-    # ---- subcommand: serve ----
-    if argv and argv[0] == "serve":
-        o = _parse_flags(argv[1:])
-        serve_main(
-            host=o.get("host", "127.0.0.1"),
-            port=int(o.get("port", 8787)),
-            token=o.get("token", "") if isinstance(o.get("token"), str) else "",
-            safe=bool(o.get("safe")),
-            allow_shell=not bool(o.get("no-shell")),
-            allow_write=not bool(o.get("no-write")),
-        )
-        return
+def login_mode():
+        """โหมดล็อกอิน - เลือก provider และตั้งค่า API"""
+        console.print(Panel(Text("เข้าสู่ระบบ Yousini - เลือกซัพพровายเดอร์", style="bold cyan"),
+                            border_style="magenta"))
+        cfg = load_config()
+        current_provider = cfg.get("default_provider", "groq")
 
-    # ---- subcommand: connect ----
-    if argv and argv[0] == "connect":
-        o = _parse_flags(argv[1:])
-        targets = o.get("_", [])
-        if not targets:
-            console.print(Text("ใช้: yousini connect <url> [--token T]", style="red"))
-            return
-        connect_main(targets[0],
-                     token=o.get("token", "") if isinstance(o.get("token"), str) else "")
-        return
 
-    agent = Agent()
-    if argv:
-        chat_turn(agent, " ".join(argv))
-        return
+def skill_install(args):
+    """yousini skill install <git-url> - ติดตั้ง skill จาก repo"""
+    import tempfile
+    SKILLS_DIR = Path.home() / ".yousini" / "skills"
+    if not args or args[0].lower() != "install":
+        console.print(Text("ใช้: yousini skill install <git-url>", style="red")); return
 
-    _setup_readline()
-    _print_banner(agent)
-    while True:
+    git_url = args[1] if len(args) > 1 else ""
+    if not git_url:
+        console.print(Text("ต้องให้ URL ของ git repo", style="red")); return
+
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    console.print(Text(f"กำลังดาวน์โหลดจาก: {git_url}", style="cyan"))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            user_input = input("❯ ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print(Text("\nจบการทำงาน", style="dim")); break
-        if not user_input:
-            continue
-        if user_input.lower() in ("/exit", "/quit"):
-            console.print(Text("จบการทำงาน", style="dim")); break
-        if user_input.lower() == "/help":
-            _print_help(); continue
-        if user_input.lower() == "/clear":
-            agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            console.print(Text("ล้างประวัติแล้ว", style="yellow")); continue
-        if user_input.lower() == "/history":
-            _print_history(agent); continue
-        if user_input.lower().startswith("/model "):
-            agent.model = user_input[7:].strip()
-            console.print(Text(f"โมเดล: {agent.model}", style="green")); continue
-        if user_input.lower().startswith("/cwd "):
-            console.print(Text(agent.set_cwd(user_input[5:].strip()), style="yellow")); continue
-        if user_input.lower().startswith("/approve "):
-            agent.auto_run = user_input[9:].strip().lower() in ("on", "1", "true")
-            console.print(Text(f"รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
-        chat_turn(agent, user_input)
+            if shutil.which("git"):
+                subprocess.run(["git", "clone", "--depth", "1", git_url, tmpdir + "/repo"],
+                               check=True, capture_output=True, timeout=60)
+                repo_path = Path(tmpdir) / "repo"
+            else:
+                console.print(Text("ต้องการ git - โปรดติดตั้ง git ก่อน", style="yellow")); return
+
+            # หาไฟล์ .md ใน skills/ folder
+            skill_files = list(repo_path.rglob("skills/*.md")) + [p for p in repo_path.rglob("*.md") if p.parent.name == "skills"]
+            if not skill_files:
+                skill_files = [p for p in repo_path.rglob("*.md") if "skill" in p.name.lower()]
+
+            if not skill_files:
+                console.print(Text("ไม่พบไฟล์ skill (.md) ใน repo", style="red")); return
+
+            copied = 0
+            for sf in skill_files:
+                dest = SKILLS_DIR / sf.name
+                if dest.exists():
+                    console.print(Text(f"มีอยู่แล้ว: {sf.name} (ข้าม)", style="dim")); continue
+                shutil.copy(sf, dest)
+                copied += 1
+                console.print(Text(f"ติดตั้ง: {sf.name}", style="green"))
+
+            console.print(Text(f"\nติดตั้งสำเร็จ {copied} skill(s) ที่ {SKILLS_DIR}", style="green"))
+        except Exception as e:
+            console.print(Text(f"Error: {e}", style="red"))
+
+        # แสดงเมนูเลือก provider
+        t = Text()
+        t.append("เลือกซัพพровายเดอร์ (หรือพิมพ์ custom เพื่อกำหนดเอง):\n\n", style="dim")
+        for key, val in PROVIDERS.items():
+            marker = "✓ " if key == current_provider else "  "
+            t.append(f"  {marker}", style="green" if key == current_provider else "dim")
+            t.append(f"{key}", style="bold cyan")
+            t.append(f" — {val['name']}\n", style="dim")
+        t.append("\n  custom — กำหนดเอง (URL/โมเดลอิสระ)\n", style="yellow")
+        t.append(f"\n  ซัพพ์พระภราดห current: {current_provider}", style="dim")
+
+        console.print(t)
+        choice = input("\nเลือก (Enter เพื่อยกเลิก): ").strip().lower()
+        if not choice:
+            console.print(Text("ยกเลิก", style="yellow")); return
+
+        provider_key = choice if choice in PROVIDERS or choice == "custom" else None
+        if not provider_key:
+            console.print(Text("ไม่เลือกหรือพิมพ์ผิด - ยกเลิก", style="red")); return
+
+        # รับ API key
+        api_key = input(f"ป้อน API Key สำหรับ {provider_key}: ").strip()
+        if not api_key:
+            console.print(Text("ต้องใส่ API Key - ยกเลิก", style="red")); return
+
+        # เลือกโมเดล
+        if provider_key == "custom":
+            base_url = input("ป้อน Base URL (เช่น https://api.example.com/v1): ").strip()
+            model = input("ป้อนโมเดล (เช่น model-name): ").strip()
+            if not base_url or not model:
+                console.print(Text("ต้องใส่ทั้ง URL และโมเดล - ยกเลิก", style="red")); return
+        else:
+            p = PROVIDERS[provider_key]
+            base_url = p["base_url"]
+            console.print(Text(f"\nโมเดลทางไปยัง:\n{p['base_url']}", style="dim"))
+            t = Text()
+            for i, m in enumerate(p["models"]):
+                t.append(f"  {i+1}. {m}\n", style="cyan")
+            t.append(f"  0. กำหนดเอง (custom)\n", style="yellow")
+            console.print(t)
+            model_choice = input(f"เลือกโมเดล (1-{len(p['models'])}, 0=กำหนดเอง): ").strip()
+            if model_choice == "0":
+                model = input("ป้อนโมเดล: ").strip()
+                if not model:
+                    console.print(Text("ต้องใส่โมเดล - ยกเลิก", style="red")); return
+            elif model_choice.isdigit() and 1 <= int(model_choice) <= len(p["models"]):
+                model = p["models"][int(model_choice) - 1]
+            elif not model_choice:
+                model = p["models"][0]  # default
+            else:
+                console.print(Text("เลือกผิด - ยกเลิก", style="red")); return
+
+        # บันทึก config
+        save_provider(provider_key, api_key, base_url, model)
+        console.print(Text(f"\nบันทึกสำเร็จ! ใช้ provider: {provider_key}, โมเดล: {model}", style="green"))
+        console.print(Text("รีสตาร์ท yousini เพื่อใช้การตั้งค่าใหม่", style="dim"))
+
+def theme_mode():
+        """เปลี่ยนธีม CLI"""
+        t = Text()
+        t.append("เลือกธีม:\n\n", style="bold")
+        for key in THEMES:
+            marker = "✓ " if key == _cfg.get("theme", CURRENT_THEME) else "  "
+            t.append(f"  {marker}", style="green" if key == _cfg.get("theme", CURRENT_THEME) else "dim")
+            t.append(f"{key}\n", style="cyan")
+        console.print(t)
+
+        choice = input("\nเลือกธีม (Enter เพื่อยกเลิก): ").strip().lower()
+        if not choice:
+            console.print(Text("ยกเลิก", style="yellow")); return
+        if choice in THEMES:
+            cfg = load_config()
+            cfg["theme"] = choice
+            save_config(cfg)
+            console.print(Text(f"เปลี่ยนธีมเป็น: {choice}", style="green"))
+        else:
+            console.print(Text(f"ธีม '{choice}' ไม่มี - เลือกจาก: {', '.join(THEMES.keys())}", style="red"))
+
+def main():
+        argv = sys.argv[1:]
+
+        # ---- subcommand: login ----
+        if argv and argv[0] == "login":
+            login_mode(); return
+
+        # ---- subcommand: skill ----
+        if argv and argv[0] == "skill":
+            skill_install(argv[1:]) if len(argv) > 1 else print("ใช้: yousini skill install <git-url>")
+            return
+
+        # ---- subcommand: theme ----
+        if argv and argv[0] == "theme":
+            theme_mode(); return
+
+        # ---- subcommand: serve ----
+        if argv and argv[0] == "serve":
+            o = _parse_flags(argv[1:])
+            serve_main(
+                host=o.get("host", "127.0.0.1"),
+                port=int(o.get("port", 8787)),
+                token=o.get("token", "") if isinstance(o.get("token"), str) else "",
+                safe=bool(o.get("safe")),
+                allow_shell=not bool(o.get("no-shell")),
+                allow_write=not bool(o.get("no-write")),
+                sandbox=bool(o.get("sandbox")),  # เพิ่ม sandbox flag
+            )
+            return
+
+        # ---- subcommand: connect ----
+        if argv and argv[0] == "connect":
+            o = _parse_flags(argv[1:])
+            targets = o.get("_", [])
+            if not targets:
+                console.print(Text("ใช้: yousini connect <url> [--token T]", style="red"))
+                return
+            connect_main(targets[0],
+                         token=o.get("token", "") if isinstance(o.get("token"), str) else "")
+            return
+
+        agent = Agent()
+        if argv:
+            chat_turn(agent, " ".join(argv))
+            return
+
+        _setup_readline()
+        _print_banner(agent)
+        while True:
+            try:
+                user_input = input("❯ ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print(Text("\nจบการทำงาน", style="dim")); break
+            if not user_input:
+                continue
+            if user_input.lower() in ("/exit", "/quit"):
+                console.print(Text("จบการทำงาน", style="dim")); break
+            if user_input.lower() == "/help":
+                # เพิ่ม /login /theme /permission ใน help
+                _print_help_extended(agent); continue
+            if user_input.lower() == "/clear":
+                agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                console.print(Text("ล้างประวัติแล้ว", style="yellow")); continue
+            if user_input.lower() == "/history":
+                _print_history(agent); continue
+            if user_input.lower().startswith("/model "):
+                agent.model = user_input[7:].strip()
+                console.print(Text(f"โมเดล: {agent.model}", style="green")); continue
+            if user_input.lower().startswith("/cwd "):
+                console.print(Text(agent.set_cwd(user_input[5:].strip()), style="yellow")); continue
+            if user_input.lower().startswith("/approve "):
+                agent.auto_run = user_input[9:].strip().lower() in ("on", "1", "true")
+                console.print(Text(f"รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
+            # ---- คำสั่งใหม่: /permission ----
+            if user_input.lower().startswith("/permission "):
+                perm_args = user_input[11:].strip()
+                console.print(permission_cmd(perm_args)); continue
+            # ---- คำสั่งใหม่: /plan ----
+            if user_input.lower() == "/plan":
+                console.print(Text("เข้าโหมดแผน (plan mode) — agent จะวางแผนทั้งหมดก่อนทำจริง", style="cyan"))
+                if input("เลือก? [y/N] ").strip().lower() in ("y", "yes"):
+                    console.print(Text("(plan mode ยังพัฒนาอยู่ - ปัจจุบันยังอย่างานปกติ)", style="yellow"))
+                continue
+            chat_turn(agent, user_input)
 
 
 if __name__ == "__main__":
