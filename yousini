@@ -9,4 +9,36 @@ while [ -h "$SOURCE" ]; do
 done
 AGENT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 cd "$AGENT_DIR" || exit 1
-exec python3 "$AGENT_DIR/yousini.py" "$@"
+
+# หา interpreter ภาษา Python ที่แท้จริง (ข้าม Windows Store stub ที่มักทำให้ "ไม่ขึ้น")
+# ลำดับ: python3 → python → py -3 → ค้นโฟลเดอร์ติดตั้ง Python บน Windows มาตรฐาน
+find_python() {
+  # ทดสอบว่ารันได้จริง (ไม่ใช่ store stub ที่ขึ้น "Python was not found")
+  _ok() { "$@" -c "import sys; raise SystemExit(0)" >/dev/null 2>&1; }
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 && _ok "$cand"; then
+      echo "$cand"; return 0
+    fi
+  done
+  if command -v py >/dev/null 2>&1 && _ok py -3; then
+    echo "py -3"; return 0
+  fi
+  # Windows: ค้นโฟลเดอร์ติดตั้งมาตรฐาน (ไม่พึ่ง PATH)
+  if [ -n "$LOCALAPPDATA" ]; then
+    for p in "$LOCALAPPDATA"/Programs/Python/Python3*/python.exe \
+             "$LOCALAPPDATA"/Programs/Python/*/python.exe; do
+      [ -x "$p" ] && _ok "$p" && { echo "$p"; return 0; }
+    done
+  fi
+  for p in /c/Python3*/python.exe \
+           /c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe; do
+    [ -x "$p" ] && _ok "$p" && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+PY=$(find_python) || {
+  echo "Error: ไม่พบ Python จริง (เจอแต่ Windows Store stub) — กรุณาติดตั้ง Python จาก python.org แล้วปิด App execution alias ของ Store" >&2
+  exit 1
+}
+exec $PY "$AGENT_DIR/yousini.py" "$@"
