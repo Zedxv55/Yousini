@@ -779,14 +779,22 @@ class Agent:
               run_in_background: bool = False) -> str:
         if not self.allow_shell:
             return "Error: shell ถูกปิดในโหมดนี้ (read-only server)"
+
+        # Check if command is in allow-list (no confirmation needed)
+        allowed_by_policy = is_shell_allowed(command)
+
         dangerous = is_dangerous(command)
         if not self.interactive:
             # โหมด headless/server: ห้ามคำสั่งอันตรายเด็ดขาด นอกจาก auto_run
-            if dangerous and not self.auto_run:
+            if dangerous and not self.auto_run and not allowed_by_policy:
                 return "Error: คำสั่งอันตรายถูกบล็อกในโหมด headless (ตั้ง AUTO_RUN=1 เพื่ออนุญาต)"
-        elif not self.auto_run or dangerous:
+        elif not self.auto_run and not allowed_by_policy or dangerous:
             border = C_ERR if dangerous else C_WARN
             title = "⚠ คำสั่งเสี่ยงสูง — ยืนยันก่อนรัน" if dangerous else "ยืนยันรัน shell"
+            # If allowed by policy, show different message
+            if allowed_by_policy and not dangerous:
+                title = "✓ คำสั่งได้รับอนุญาตจาก policy — ยืนยันการรัน"
+                border = C_OK
             console.print(Panel(Text(command, style="bold white"), title=title,
                                 border_style=border, padding=(0, 1)))
             ans = _safe_input(f"  [y] รัน   [N] ยกเลิก   [e] แก้ไข  ? ").strip().lower()
@@ -1573,6 +1581,10 @@ def _print_help():
         ("/model <ชื่อ>", "เปลี่ยนโมเดล เช่น /model openai/gpt-oss-120b"),
         ("/cwd <โฟลเดอร์>", "เปลี่ยนโฟลเดอร์ทำงาน"),
         ("/approve on|off", "รัน shell อัตโนมัติโดยไม่ถาม"),
+        ("/login", "เข้าสู่ระบบ/เลือก provider และ API key"),
+        ("/theme <ชื่อ>", "เปลี่ยนธีม (dark/notion/nord/tokyo-night)"),
+        ("/permission <คำสั่ง>", "จัดการ on/off shell commands (add/list/remove/clear)"),
+        ("/plan", "โหมดแผน: วางแผนก่อนทำ (กำลังพัฒนา)"),
         ("/reload", "โหลด YOUSINI.md + skills ใหม่"),
         ("/skills", "แสดงสกิลที่โหลดอยู่"),
         ("/hooks", "แสดงสถานะ hooks"),
@@ -1654,6 +1666,165 @@ def _print_hooks(agent: Agent):
 # โหมด SERVER: yousini serve  → เปิดเป็นบริการ (เว็บ UI + API สตรีม SSE)
 # session ถูกบันทึกลงดิสก์ข้าม restart ด้วย
 # ---------------------------------------------------------------------------
+
+# ============================================================
+# CONFIGURATION & THEMES
+# ============================================================
+CONFIG_DIR = Path.home() / ".yousini"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+THEMES = {
+    "dark": {"bg": "#05060a", "panel": "rgba(18,20,32,.68)", "ink": "#eef1ff",
+             "brand1": "#7c5cff", "brand2": "#18d3ff", "brand3": "#ff5cae",
+             "ok": "#3ddc97", "warn": "#ffcf5c", "danger": "#ff6b6b"},
+    "notion": {"bg": "#ffffff", "panel": "rgba(240,240,242,.8)", "ink": "#191919",
+               "brand1": "#0070ec", "brand2": "#4dccff", "brand3": "#ff6b6b",
+               "ok": "#22c55e", "warn": "#f59e0b", "danger": "#ef4444"},
+    "nord": {"bg": "#24283b", "panel": "rgba(42,46,66,.7)", "ink": "#d8dee9",
+             "brand1": "#8aadf4", "brand2": "#7dcfff", "brand3": "#f5a97f",
+             "ok": "#8ccf7e", "warn": "#e2b768", "danger": "#e06e63"},
+    "tokyo-night": {"bg": "#1a1b26", "panel": "rgba(36,40,59,.7)", "ink": "#c0caf5",
+                    "brand1": "#bb9af7", "brand2": "#7aa2f7", "brand3": "#ff9e6d",
+                    "ok": "#9ece6a", "warn": "#e0af68", "danger": "#f7768e"}
+}
+
+
+def load_config() -> dict:
+    CONFIG_DIR.mkdir(exist_ok=True)
+    try:
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"theme": "dark", "allow_shell_prefix": []}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_DIR.mkdir(exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def is_shell_allowed(cmd: str) -> bool:
+    """Check if a shell command is in the allow-list (no confirmation needed)"""
+    cfg = load_config()
+    allow = cfg.get("allow_shell_prefix", [])
+    if not allow:
+        return False
+    return any(cmd.startswith(p) for p in allow)
+
+
+def permission_cmd(args: str) -> str:
+    cfg = load_config()
+    allow = cfg.get("allow_shell_prefix", [])
+    parts = args.strip().split()
+    if not parts:
+        return "ใช้: /permission add <prefix> | /permission list | /permission remove <prefix> | /permission clear"
+    cmd = parts[0].lower()
+    if cmd == "add" and len(parts) > 1:
+        prefix = parts[1]
+        if prefix not in allow:
+            allow.append(prefix)
+            cfg["allow_shell_prefix"] = allow
+            save_config(cfg)
+            return f"เพิ่ม '{prefix}' เข้า allow-list"
+        return f"'{prefix}' มีอยู่แล้ว"
+    elif cmd == "list":
+        if not allow:
+            return "allow-list ว่าง - คำสั่ง shell ทุกอย่างถามก่อน"
+        return "allow-list:\n" + "\n".join(f"  - {p}" for p in allow)
+    elif cmd == "remove" and len(parts) > 1:
+        prefix = parts[1]
+        if prefix in allow:
+            allow.remove(prefix)
+            cfg["allow_shell_prefix"] = allow
+            save_config(cfg)
+            return f"ลบ '{prefix}' ออกแล้ว"
+        return f"'{prefix}' ไม่มีใน allow-list"
+    elif cmd == "clear":
+        cfg["allow_shell_prefix"] = []
+        save_config(cfg)
+        return "ล้าง allow-list แล้ว"
+    return "ใช้: /permission add <prefix> | /permission list | /permission remove <prefix> | /permission clear"
+
+
+def login_mode():
+    console.print(Panel(Text("เข้าสู่ระบบ Yousini - เลือกซัพพโรเวียร์เดอร์", style="bold cyan"),
+                   border_style="magenta"))
+    cfg = load_config()
+    current_provider = cfg.get("default_provider", "groq")
+
+    t = Text()
+    t.append("เลือกซัพพโรเวียร์ (หรือพิมพ์ custom เพื่อกำหนดเอง):\n\n", style="dim")
+    providers = {
+        "openrouter": {"name": "OpenRouter (ฟรี)", "base_url": "https://openrouter.ai/api/v1",
+                       "models": ["cohere/north-mini-code:free", "nvidia/nemotron-3-ultra-550b-a12b:free",
+                                  "poolside/laguna-m.1:free", "nvidia/nemotron-3-super-120b-a12b:free",
+                                  "nousresearch/hermes-3-llama-3.1-405b:free"]},
+        "groq": {"name": "Groq", "base_url": "https://api.groq.com/openai/v1",
+                 "models": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"]},
+        "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1",
+                   "models": ["gpt-4o", "gpt-4o-mini"]},
+        "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1",
+                     "models": ["deepseek-chat"]},
+        "anthropic": {"name": "Anthropic", "base_url": "https://api.anthropic.com/v1",
+                      "models": ["claude-3-5-sonnet-20241022"]}
+    }
+    for key, val in providers.items():
+        marker = "✓ " if key == current_provider else "  "
+        t.append(f"  {marker}", style="green" if key == current_provider else "dim")
+        t.append(f"{key}", style="bold cyan")
+        t.append(f" — {val['name']}\n", style="dim")
+    t.append("\n  custom — กำหนดเอง (URL/โมเดลอิสระ)\n", style="yellow")
+    console.print(t)
+
+    choice = input("\nเลือก (Enter เพื่อยกเลิก): ").strip().lower()
+    if not choice:
+        console.print(Text("ยกเลิก", style="yellow")); return
+
+    provider_key = choice if choice in providers or choice == "custom" else None
+    if not provider_key:
+        console.print(Text("ไม่เลือกหรือพิมพ์ผิด - ยกเลิก", style="red")); return
+
+    api_key = input(f"ป้อน API Key สำหรับ {provider_key}: ").strip()
+    if not api_key:
+        console.print(Text("ต้องใส่ API Key - ยกเลิก", style="red")); return
+
+    if provider_key == "custom":
+        base_url = input("ป้อน Base URL (เช่น https://api.example.com/v1): ").strip()
+        model = input("ป้อนโมเดล (เช่น model-name): ").strip()
+        if not base_url or not model:
+            console.print(Text("ต้องใส่ทั้ง URL และโมเดล - ยกเลิก", style="red")); return
+    else:
+        p = providers[provider_key]
+        base_url = p["base_url"]
+        t = Text()
+        for i, m in enumerate(p["models"]):
+            t.append(f"  {i+1}. {m}\n", style="cyan")
+        t.append(f"  0. กำหนดเอง (custom)\n", style="yellow")
+        console.print(t)
+        model_choice = input(f"เลือกโมเดล (1-{len(p['models'])}, 0=กำหนดเอง): ").strip()
+        if model_choice == "0":
+            model = input("ป้อนโมเดล: ").strip()
+            if not model:
+                console.print(Text("ต้องใส่โมเดล - ยกเลิก", style="red")); return
+        elif model_choice.isdigit() and 1 <= int(model_choice) <= len(p["models"]):
+            model = p["models"][int(model_choice) - 1]
+        else:
+            model = p["models"][0]  # default
+
+    # บันทึก config
+    cfg = load_config()
+    cfg["default_provider"] = provider_key
+    cfg["providers"] = {provider_key: {"api_key": api_key, "base_url": base_url, "model": model}}
+    save_config(cfg)
+    console.print(Text(f"\nบันทึกสำเร็จ! ใช้ provider: {provider_key}, โมเดล: {model}", style="green"))
+    console.print(Text("รีสตาร์ท yousini เพื่อใช้การตั้งค่าใหม่", style="dim"))
+
+
+def plan_mode():
+    console.print(Text("\nเข้าโหมดแผน (plan mode) — agent จะวางแผนทั้งหมดก่อนทำ", style="cyan"))
+    if input("เริ่ม? [y/N] ").strip().lower() in ("y", "yes"):
+        console.print(Text("(plan mode พัฒนาต่อ... ปัจจุบันให้ใช้ /permission add แทน)", style="dim"))
+
+
 def _load_webui():
     here = Path(__file__).resolve().parent
     f = here / "webui.html"
@@ -2080,6 +2251,30 @@ def _run_repl(agent: Agent):
             if d.get("meta", {}).get("model"):
                 agent.model = d["meta"]["model"]
             console.print(Text(f"โหลด session '{name}' ({len(agent.messages)} ข้อความ)", style="green")); continue
+        if low == "/login":
+            login_mode()
+            continue
+        if low.startswith("/theme "):
+            name = user_input[6:].strip()
+            cfg = load_config()
+            if name in THEMES:
+                cfg["theme"] = name
+                save_config(cfg)
+                console.print(Text(f"เปลี่ยนธีมเป็น: {name}", style="green"))
+            else:
+                # show theme selector
+                t = Text()
+                for key in THEMES:
+                    t.append(f"  - {key}\n", style="cyan")
+                console.print(Panel(t, title="ธีมที่มี", border_style="magenta"))
+            continue
+        if low.startswith("/permission "):
+            args = user_input[12:].strip()
+            console.print(permission_cmd(args))
+            continue
+        if low == "/plan":
+            plan_mode()
+            continue
         chat_turn(agent, user_input)
 
 
@@ -2149,6 +2344,36 @@ def main():
     if argv and argv[0] == "mcp":
         o = _parse_flags(argv[1:])
         mcp_main(allow_exec=bool(o.get("allow-exec")))
+        return
+
+    # ---- subcommand: login ----
+    if argv and argv[0] == "login":
+        o = _parse_flags(argv[1:])
+        login_mode()  # interactive provider selection
+        return
+
+    # ---- subcommand: theme ----
+    if argv and argv[0] == "theme":
+        o = _parse_flags(argv[1:])
+        name = o.get("_", ["default"])[0] if o.get("_") else None
+        if name and name in THEMES:
+            cfg = {"theme": name}
+            CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+            console.print(Text(f"เปลี่ยนธีมเป็น: {name}", style="green"))
+        else:
+            # show theme selector
+            t = Text()
+            for key in THEMES:
+                t.append(f"  - {key}\n", style="cyan")
+            console.print(Panel(t, title="ธีมที่มี", border_style="magenta"))
+        return
+
+    # ---- subcommand: permission ----
+    if argv and argv[0] == "permission":
+        o = _parse_flags(argv[1:])
+        subcmd = o.get("_", [])[0] if o.get("_") else ""
+        perm_args = " ".join(o.get("_", [])[1:]) if len(o.get("_", [])) > 1 else ""
+        permission_cmd(subcmd + " " + perm_args)  # CLI permission command
         return
 
     # ---- subcommand: resume ----
