@@ -132,8 +132,9 @@ cp .env.example .env
 | `AUTO_RUN` | `1`=รัน shell ทันทีไม่ถาม (อันตราย) | `0` |
 | `CONFIRM_FILES` | `0`=เขียนไฟล์ไม่ต้องถาม | `1` |
 | `SHELL_TIMEOUT` | ตัดคำสั่งค้างที่ (วินาที) | `60` |
-| `YOUSINI_SEARCH_PROVIDER` | เสิร์ชผ่าน API จริงแทน scraping: `brave` / `serpapi` / `tavily` (เว้นว่าง=ใช้ scraping หลายชั้น) | _(ว่าง)_ |
-| `YOUSINI_SEARCH_API_KEY` (หรือ `BRAVE_API_KEY` / `SERPAPI_KEY` / `TAVILY_API_KEY`) | คีย์สำหรับ provider ค้นหาที่เลือก | — |
+| `YOUSINI_SEARCH_PROVIDER` | เสิร์ชผ่าน API จริงแทน scraping: `brave` / `serpapi` / `tavily` (เว้นว่าง = ใช้ `BRAVE_API_KEY` หากมี ไม่เช่นนั้น fallback scraping) | _(ว่าง)_ |
+| `BRAVE_API_KEY` | Brave Search API key (ฟรี 2,000 calls/mo) — **default** สำหรับ web_search หากตั้งไว้ | — |
+| `YOUSINI_SEARCH_API_KEY` (หรือ `SERPAPI_KEY` / `TAVILY_API_KEY`) | คียกอื่น ๆ (จะถูกใช้หากตั้ง `YOUSINI_SEARCH_PROVIDER`) | — |
 
 > เข้ากันได้กับของเดิม: หากไม่มี `YOUSINI_*` จะตกไปอ่าน `ZELAX_*` หรือ `GROQ_*` เป็น fallback ให้ย้ายมาใช้ `YOUSINI_*` ได้ทันที
 
@@ -181,6 +182,8 @@ YOUSINI_MODEL=deepseek-chat
 | `run_python` | รันโค้ด Python บนเครื่อง (คำนวณ/ประมวลผล/ทดสอบ snippet) |
 | `spawn_subagent` | รันเอเจนต์ย่อยแยกบริบท เพื่อทำงานเฉพาะส่วนแล้วคืนสรุป (ไม่ทำให้บริบทหลักบวม) |
 | `manage_todos` | จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) โชว์แผนงานให้ผู้ใช้เห็นก่อนลงมือ |
+| `batch_edit_files` | แก้หลายไฟล์พร้อมกัน + commit อะตอมิก (เหมาะ refactor ใหญ่) |
+| `run_test_loop` | รัน test แล้วแก้ไขอัตโนมัติซ้ำ (TDD auto-fix loop) |
 
 ---
 
@@ -311,6 +314,36 @@ ln -s "$(pwd)/yousini" ~/.local/bin/yousini
 ใช้ `ln -s` ไม่ใช่ `cp` เพื่อให้ launcher ไล่ตาม symlink หาโฟลเดอร์ repo จริงได้ แม้ย้าย/ลิงก์ข้ามที่
 
 > ติดตั้งแบบแพ็กเกจ (มีคำสั่ง `yousini` จาก console script): `pip install -e .`
+
+---
+
+## 🚀 สิ่งที่เพิ่มใหม่ (Yousini v2)
+
+### อัตโนมัติเมื่อไม่ต้อง restart
+- **Config auto-load**: `/login` + บันทึก provider ลง `~/.yousini/config.json` → โหลด credentials อัตโนมัติเมื่อเริ่มโปรแกรมหรือสลับ session — ไม่ต้อง restart แล้ว
+- **Auto-apply credentials**: เปลี่ยน provider ระหว่าง session → ใช้ได้ทันที ไม่ต้อง restart
+
+### Context window จัดการตัวเอง
+- **Auto-compact**: ตรวจจับ Token usage อัตโนมัติและยุบคอนเทกซต์เมื่อเกิน 80% ของ threshold — ป้องกัน context overflow error
+- **Token-aware trimming**: `_trim()` คำนวณ token จากข้อความก่อนตัด ไม่ใช่ตัดแบบ naive จากแค่จำนวนข้อความ
+
+### 📋 Plan Mode (`/plan`) — เต็มรูปแบบ
+1. ระบุเป้าหมาย → Agent สร้าง task plan โดยใช้ LLM
+2. แสดงแผนเป็นขั้นตอน → ยืนยันก่อนเริ่ม
+3. ดำเนินทีละ step → แสดงผลหลัง step
+4. สรุปผลเมื่อเสร็จ (สำเร็จ/มีข้อผิดพลาด)
+
+### เครื่องมือใหม่
+
+| เครื่องมือ | ทำอะไร |
+|---|---|
+| `batch_edit_files` | แก้หลายไฟล์พร้อมกัน + commit อะตอมิก (เหมาะ refactor ใหญ่) |
+| `run_test_loop` | รัน test แล้วแก้ไขอัตโนมัติซ้ำ (TDD auto-fix loop) |
+
+### Web Search — Brave API default
+- ถ้าตั้ง `BRAVE_API_KEY` ไว้ → Brave Search API เป็น default (เชื่อถือได้ ไม่พังง่าย)
+- ยังมี `YOUSINI_SEARCH_PROVIDER` สำหรับเลือก SerpAPI/Tavily โดยตรง
+- ถ้าไม่มี API key → fallback เป็น scraping หลายตัว (DuckDuckGo + Bing)
 
 ---
 
