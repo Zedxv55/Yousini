@@ -633,6 +633,8 @@ class Agent:
         # รายการสิ่งที่ต้องทำ (todo) สำหรับแสดงแผน/ความคืบหน้าให้ผู้ใช้
         self.todos = []
         self._todo_seq = 0
+        # Quiet mode: ซ่อน output ของ tool call/result — เหลือแค่คำตอบสุดท้าย
+        self.quiet_mode = False
 
     def refresh_context(self):
         """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
@@ -1350,22 +1352,46 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
         agent.messages.append({"role": "tool", "tool_call_id": tc_id,
                                "content": f"Blocked by hook: {reason}"})
         return
+
     if name not in IMPL:
         msg = (f"Error: ไม่มีเครื่องมือ '{name}' ในระบบ "
                f"(มี: {', '.join(sorted(IMPL))})")
         console.print(Text(f"⚠ {msg}", style="red"))
         agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": msg})
         return
+
+    # แสดงผล tool call ในโหมดปกติ หรือแสดง spinner ในโหมด quiet
     shown = args.get("command", "") if name == "shell" else args
     if not isinstance(shown, str):
         shown = json.dumps(shown, ensure_ascii=False)
-    console.print(_tool_line(name, shown))
-    result = IMPL[name](args, agent)
+
+    if not agent.quiet_mode:
+        console.print(_tool_line(name, shown))
+
+    # เตรียม spinner สำหรับ quiet mode (แสดงว่ากำลังทำงาน)
+    spinner_live = None
+    spinner_text = Text(f"⏳ {name}…", style=C_THINK)
+    if agent.quiet_mode:
+        spinner_live = Live(spinner_text, console=console, refresh_per_second=10)
+        spinner_live.start()
+
+    try:
+        result = IMPL[name](args, agent)
+    finally:
+        if spinner_live is not None:
+            spinner_live.stop()
+            # ลบข้อความ spinner ออก (เขียนทับบรรทัดนั้นเมื่อเสร็จ)
+            console.print()
+
     agent.hooks.run_post(name, args, str(result))
-    console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style=C_RESULT))
+
+    # แสดงผลลัพธ์ในโหมดปกติ
+    if not agent.quiet_mode:
+        console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style=C_RESULT))
+
     agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
-    # สำหรับ todo: วาดแผนงานให้ผู้ใช้เห็นชัดเจนด้วย
-    if name == "manage_todos":
+    # สำหรับ todo: วาดแผนงานให้ผู้ใช้เห็นชัดเจนด้วย (เฉพาะโหมดปกติ)
+    if not agent.quiet_mode and name == "manage_todos":
         agent._print_todos()
 
 
@@ -1491,7 +1517,8 @@ def chat_turn(agent: Agent, user_text: str):
 
         if any(t.get("name") for t in tool_calls):
             tool_seen = True
-            console.print(_think("เตรียมเครื่องมือ…"))
+            if not agent.quiet_mode:
+                console.print(_think("เตรียมเครื่องมือ…"))
             asst = {"role": "assistant", "content": "".join(content)}
             asst["tool_calls"] = [
                 {"id": t["id"], "type": "function",
@@ -1711,6 +1738,7 @@ def _print_help():
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
         ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
+        ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
         ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
         ("/exit, /quit", "ออก"),
@@ -2463,6 +2491,12 @@ def _run_repl(agent: Agent):
             agent._print_todos(); continue
         if low == "/compact":
             console.print(Text(agent.compact(), style=C_OK)); continue
+        if low == "/quiet on" or low == "/quiet":
+            agent.quiet_mode = True
+            console.print(Text("🤫 Silent mode: ซ่อนรายละเอียด tool เฉย ๆ แสดงแค่คำตอบ (มี spinner แสดงความคืบหน้า)", style="dim")); continue
+        if low == "/quiet off":
+            agent.quiet_mode = False
+            console.print(Text("🔊 Normal mode: แสดงรายละเอียด tool call ทั้งหมด", style="green")); continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
