@@ -167,6 +167,7 @@ SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS",
 SEARCH_PROVIDER = (os.getenv("YOUSINI_SEARCH_PROVIDER") or "").lower()
 SEARCH_API_KEY = (os.getenv("YOUSINI_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
                   or os.getenv("SERPAPI_KEY") or os.getenv("TAVILY_API_KEY", ""))
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
 if not API_KEY:
     console.print(Text("Error: ไม่พบ API Key โปรดคัดลอก .env.example เป็น .env แล้วใส่ YOUSINI_API_KEY", style="red"))
@@ -731,9 +732,43 @@ class Agent:
                             border_style=C_WARN, padding=(0, 1)))
 
     # ---- trimming: ตัดที่ user-boundary เท่านั้น ไม่ให้เหลือ tool-result ลอยๆ ----
-    def _trim(self, max_msgs=40):
+    # ---- Context window management ----
+    # Token budget before auto-compact triggers (rough: 1 token ≈ 4 chars)
+    MAX_CONTEXT_TOKENS = int(os.getenv("YOUSINI_MAX_TOKENS", "12000"))
+    AUTO_COMPACT_RATIO = float(os.getenv("YOUSINI_COMPACT_RATIO", "0.8"))
+
+    def _estimate_tokens(self, messages: list = None) -> int:
+        """Best-effort token estimate (4 chars ≈ 1 token).
+        Good enough for auto-compact decisions without pulling in tiktoken."""
+        msgs = messages or self.messages
+        total = 0
+        for m in msgs:
+            c = m.get("content", "")
+            if isinstance(c, list):
+                # multimodal — count only text parts
+                for part in c:
+                    if isinstance(part, dict):
+                        total += len(part.get("text", ""))
+                    else:
+                        total += len(str(part))
+            else:
+                total += len(str(c))
+        return max(1, total // 4)
+
+    def _trim(self, max_msgs=40, max_tokens=None):
+        """Token-aware trimming: first try compacting by token budget,
+        then fall back to naive max-msgs truncation."""
+        if max_tokens is None:
+            max_tokens = self.MAX_CONTEXT_TOKENS
+        # Check if we already need compacting
+        current_tokens = self._estimate_tokens()
+        threshold = int(max_tokens * self.AUTO_COMPACT_RATIO)
+        if current_tokens > threshold:
+            self.compact()
+            return
         if len(self.messages) <= max_msgs:
             return
+        # Naive fallback: keep system + latest user messages
         sys0 = self.messages[0]
         conv = self.messages[1:]
         cuts = [i for i, m in enumerate(conv) if m["role"] == "user"]
@@ -742,6 +777,18 @@ class Agent:
             conv = conv[drop:]
             cuts = [i - drop for i in cuts[1:]]
         self.messages = [sys0] + conv
+
+    def _auto_compact(self) -> bool:
+        """Auto-compact if token usage exceeds threshold. Returns True if compacted."""
+        current = self._estimate_tokens()
+        threshold = int(self.MAX_CONTEXT_TOKENS * self.AUTO_COMPACT_RATIO)
+        if current > threshold and len(self.messages) > 3:
+            self.compact()
+            console.print(Text(
+                f"⚡ ยุบคอนเทกซต์อัตโนมัติ (โทเค็น ~{current} → ต่ำกว่า {threshold})",
+                style=C_WARN))
+            return True
+        return False
 
     # ---- Checkpoint (auto git commit ก่อนแก้ไฟล์) ----
     def checkpoint(self, reason: str = "auto") -> str:
@@ -980,8 +1027,15 @@ class Agent:
             return f"Error: web_fetch ไม่ได้: {e}"
 
     def web_search(self, query: str, max_results: int = 5) -> str:
-        if SEARCH_PROVIDER in ("brave", "serpapi", "tavily") and SEARCH_API_KEY:
+        """ค้นหาข้อมูลบนอินเทอร์เน็ต
+        ลำดับความสำคัญ:
+        1. YOUSINI_SEARCH_PROVIDER + YOUSINI_SEARCH_API_KEY (ถ้าตั้งไว้)
+        2. Brave API (ถ้ามี BRAVE_API_KEY) — default ที่เชื่อถือได้
+        3. Scraping fallback (DuckDuckGo/Bing) — ใช้เมื่อไม่มี API key"""
+        if SEARCH_PROVIDER and SEARCH_API_KEY:
             return web_search_api(query, max_results, SEARCH_PROVIDER, SEARCH_API_KEY)
+        if BRAVE_API_KEY:
+            return web_search_api(query, max_results, "brave", BRAVE_API_KEY)
         return web_search_robust(query, max_results)
 
     def set_cwd(self, path: str) -> str:
@@ -1061,6 +1115,63 @@ class Agent:
         console.print(Text(f"⚙ เอเจนต์ย่อย: {_truncate(task, 60)}", style="dim"))
         return _run_subagent_loop(sub, task, max_iter=6)
 
+    def batch_edit_files(self, edits: list) -> str:
+        """แก้ไขหลายไฟล์พร้อมกัน + commit อะตอมิก (ใช้ list ของ dict: {path, old_string, new_string})
+        ถ้าไม่ระบุ old_string จะเขียนทับไฟล์เลย"""
+        if not edits:
+            return "Error: ต้องระบุรายการแก้ไขอย่างน้อย 1 ไฟล์"
+        if not self.allow_write:
+            return "Error: batch_edit ถูกปิดในโหมด read-only"
+        changes = []
+        for i, edit in enumerate(edits, 1):
+            path = edit.get("path")
+            if not path:
+                changes.append(f"Step {i}: (ข้าม — ไม่ระบุ path)")
+                continue
+            old_string = edit.get("old_string", "")
+            new_string = edit.get("new_string", "")
+            full = self._resolve(path)
+            try:
+                if old_string:
+                    r = self.edit_file(path, old_string, new_string)
+                    changes.append(f"Step {i}: edit {path}: {r}")
+                else:
+                    r = self.write_file(path, new_string)
+                    changes.append(f"Step {i}: write {path}: {r}")
+            except Exception as e:
+                changes.append(f"Step {i}: Error {path}: {e}")
+        # Atomic git commit
+        cp = self.checkpoint("batch_edit_files")
+        summary = f"batch_edit_files: {len(changes)} file(s) changed"
+        if cp:
+            summary += f" — {cp}"
+        return summary + "\n" + "\n".join(changes)
+
+    def run_test_loop(self, test_cmd: str = "pytest", max_iterations: int = 3) -> str:
+        """รัน test → ถ้ามี error → แก้ไขอัตโนมัติ → loop จนผ่านหรือหมด max_iterations"""
+        if not self.allow_shell:
+            return "Error: run_test_loop ถูกปิดในโหมด read-only"
+        console.print(Text(f"🧪 Test loop: {test_cmd} (max {max_iterations} iterations)", style=C_THINK))
+        self.checkpoint(f"before_test_loop:{test_cmd}")
+        for i in range(1, max_iterations + 1):
+            console.print(Text(f"รอบที่ {i}/{max_iterations}...", style=C_TOOL))
+            proc = subprocess.run(test_cmd, shell=True, cwd=self.cwd,
+                                  capture_output=True, text=True, timeout=120)
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            combined = stdout + stderr
+            if proc.returncode == 0:
+                console.print(Text(f"✅ Round {i}: ทุก test ผ่าน!", style=C_OK))
+                return f"test loop ผ่านในรอบที่ {i}:\n{combined[:2000]}"
+            console.print(Text(f"❌ Round {i}: test ล้มเหลว ({proc.returncode})", style=C_WARN))
+            if i < max_iterations:
+                self.messages.append({
+                    "role": "user",
+                    "content": (f"Test ล้มเหลว (round {i}):\n{combined[-1500:]}\n"
+                                f"แก้ไขโค้ดให้ test ผ่าน แล้วส่ง tool call ต่อไปได้เลย")
+                })
+        return f"test loop จบหลัง {max_iterations} รอบ — มีบาง test ที่ยังล้มเหลว"
+
 
 # ---------------------------------------------------------------------------
 # web_search แบบทนทาน: ลองหลาย endpoint + fallback
@@ -1123,8 +1234,8 @@ def web_search_robust(query: str, max_results: int = 5) -> str:
 
 
 # ---------------------------------------------------------------------------
-# web_search ผ่าน API provider จริง (Brave / SerpAPI / Tavily) — ทางเลือกเสริม
-# ใช้เมื่อตั้ง YOUSINI_SEARCH_PROVIDER + key แล้ว ไม่พึ่ง scraping
+# web_search ผ่าน API provider จริง (Brave / SerpAPI / Tavily) — default คือ Brave API
+# โทรก่อน scraping เสมอเมื่อมี BRAVE_API_KEY ตั้งไว้
 # ---------------------------------------------------------------------------
 def web_search_api(query: str, max_results: int, provider: str, api_key: str) -> str:
     try:
@@ -1196,6 +1307,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "run_python", "description": "รันโค้ด Python บนเครื่อง คืน stdout/stderr (ใช้สำหรับคำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) ปิดได้ในโหมด read-only", "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "โค้ด Python เต็ม"}, "timeout": {"type": "integer", "description": "จำกัดวินาที (ค่าเริ่มต้นตาม SHELL_TIMEOUT)"}}, "required": ["code"]}}},
     {"type": "function", "function": {"name": "spawn_subagent", "description": "รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (เช่น วิเคราะห์ไฟล์, ค้นหาข้อมูล, สรุป) คืนคำสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม ห้ามเรียกซ้อนกัน", "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "คำสั่งงานสำหรับเอเจนต์ย่อย"}, "focus": {"type": "string", "description": "โฟกัสเพิ่มเติม (ไม่บังคับ)"}}, "required": ["task"]}}},
     {"type": "function", "function": {"name": "manage_todos", "description": "จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) เพื่อแสดงแผนงานให้ผู้ใช้เห็นชัดเจน: action สามารถเป็น add/update/complete/start/delete/list — add ต้องการ content, complete/start/update/delete ต้องการ todo_id", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / update / complete / start / delete / list"}, "content": {"type": "string", "description": "ข้อความรายการ (สำหรับ add/update)"}, "todo_id": {"type": "integer", "description": "รหัสรายการ (สำหรับ update/complete/start/delete)"}, "status": {"type": "string", "description": "สถานะใหม่ (ไม่บังคับ)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "batch_edit_files", "description": "แก้ไขหลายไฟล์พร้อมกัน + commit อะตอมิก เหมาะสำหรับ refactor ใหญ่ ใส่รายการ edits = [{path, old_string?, new_string?}]", "parameters": {"type": "object", "properties": {"edits": {"type": "array", "description": "รายการแก้ไฟล์ แต่ละอันมี path + new_string (เรียกใช้ old_string ถ้าต้องการ replace)", "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "new_string"]}}}, "required": ["edits"]}},
+    {"type": "function", "function": {"name": "run_test_loop", "description": "รัน test แล้วแก้ไขอัตโนมัติซ้ำ (auto-fix loop) — เหมาะกับ TDD workflow ใส่ test_cmd เช่น pytest -x", "parameters": {"type": "object", "properties": {"test_cmd": {"type": "string", "description": "คำสั่งรัน test (ค่าเริ่มต้น pytest)", "default": "pytest"}, "max_iterations": {"type": "integer", "description": "จำนวนรอบสูงสุด (ค่าเริ่มต้น 3)", "default": 3}}, "required": []}},
 ]
 
 IMPL = {
@@ -1210,6 +1323,8 @@ IMPL = {
     "run_python": lambda a, k: k.run_python(**a),
     "spawn_subagent": lambda a, k: k.spawn_subagent(**a),
     "manage_todos": lambda a, k: k.manage_todos(**a),
+    "batch_edit_files": lambda a, k: k.batch_edit_files(**a),
+    "run_test_loop": lambda a, k: k.run_test_loop(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1217,7 +1332,7 @@ _TOOL_FIX_HINT = (
     "ข้อผิดพลาด: คุณพยายามเรียกใช้เครื่องมือที่ไม่มีในระบบ (เช่น repo_browser, python, "
     "web_browser) กรุณาใช้เฉพาะเครื่องมือที่กำหนดให้เท่านั้น: shell, read_file, write_file, "
     "edit_file, list_dir, glob, grep, web_fetch, web_search, set_cwd, ask_user, "
-    "list_jobs, read_job"
+    "list_jobs, read_job, manage_todos, batch_edit_files, run_test_loop"
 )
 
 
@@ -1311,6 +1426,7 @@ def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
+    agent._auto_compact()
     tool_seen = False
     attempts = 0
     MAX_ATTEMPTS = 3
@@ -1412,6 +1528,7 @@ def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
     agent.messages.append({"role": "user", "content": user_text})
     agent._trim()
+    agent._auto_compact()
     attempts = 0
     MAX_ATTEMPTS = 3
     while True:
@@ -1689,10 +1806,51 @@ THEMES = {
 }
 
 
+def _apply_provider_config(cfg: dict) -> bool:
+    """Apply provider API key + base_url + model from config to the running process.
+    Also recreates the global OpenAI client so the change takes effect immediately.
+    Returns True if a provider was activated."""
+    global client, API_KEY, BASE_URL, MODEL
+    providers = cfg.get("providers", {})
+    default_key = cfg.get("default_provider")
+    activated = False
+    if default_key and default_key in providers:
+        p = providers[default_key]
+        api_key = p.get("api_key", "")
+        base_url = p.get("base_url", "")
+        model = p.get("model", "")
+        if api_key:
+            os.environ["YOUSINI_API_KEY"] = api_key
+            API_KEY = api_key; activated = True
+        if base_url:
+            os.environ["YOUSINI_BASE_URL"] = base_url
+            BASE_URL = base_url; activated = True
+        if model:
+            os.environ["YOUSINI_MODEL"] = model
+            MODEL = model; activated = True
+    elif default_key == "custom" and "<custom>" in providers:
+        p = providers["<custom>"]
+        if p.get("api_key"):
+            os.environ["YOUSINI_API_KEY"] = p["api_key"]
+            API_KEY = p["api_key"]; activated = True
+        if p.get("base_url"):
+            os.environ["YOUSINI_BASE_URL"] = p["base_url"]
+            BASE_URL = p["base_url"]; activated = True
+        if p.get("model"):
+            os.environ["YOUSINI_MODEL"] = p["model"]
+            MODEL = p["model"]; activated = True
+    if activated:
+        client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+    return activated
+
+
 def load_config() -> dict:
     CONFIG_DIR.mkdir(exist_ok=True)
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        # Auto-apply provider credentials on load (fix: login works without restart)
+        _apply_provider_config(cfg)
+        return cfg
     except Exception:
         return {"theme": "dark", "allow_shell_prefix": []}
 
@@ -1815,14 +1973,107 @@ def login_mode():
     cfg["default_provider"] = provider_key
     cfg["providers"] = {provider_key: {"api_key": api_key, "base_url": base_url, "model": model}}
     save_config(cfg)
-    console.print(Text(f"\nบันทึกสำเร็จ! ใช้ provider: {provider_key}, โมเดล: {model}", style="green"))
-    console.print(Text("รีสตาร์ท yousini เพื่อใช้การตั้งค่าใหม่", style="dim"))
+    # Auto-apply so the change takes effect immediately (no restart needed)
+    _apply_provider_config(cfg)
+    console.print(Text(f"\n✅ บันทึกและเปิดใช้ provider: {provider_key}, โมเดล: {model}", style="green"))
 
 
 def plan_mode():
-    console.print(Text("\nเข้าโหมดแผน (plan mode) — agent จะวางแผนทั้งหมดก่อนทำ", style="cyan"))
-    if input("เริ่ม? [y/N] ").strip().lower() in ("y", "yes"):
-        console.print(Text("(plan mode พัฒนาต่อ... ปัจจุบันให้ใช้ /permission add แทน)", style="dim"))
+    """Plan Mode — agent generates a task plan, user confirms, then executes step-by-step.
+    Flow: goal → plan → confirm → execute loop (run → check → fix if needed)."""
+    console.print(Panel(Text("📋 แผนโหมด — Agent จะวางแผนและดำเนินการตามลำดับ", style="bold cyan"),
+                        border_style="magenta"))
+
+    # Step 1: Get goal from user
+    goal = input("\nเป้าหมายของคุณ: ").strip()
+    if not goal:
+        console.print(Text("ยกเลิก — ไม่ได้ระบุเป้าหมาย", style="red")); return
+
+    # Step 2: Generate plan via LLM
+    console.print(Text("\n⏺ กำลังวิเคราะห์เป้าหมายและสร้างแผน...", style=C_THINK))
+    plan_prompt = (
+        f"คุณเป็น senior developer วางแผนการทำงานให้เสร็จสมบูรณ์ "
+        f"เป้าหมาย: {goal}\n\n"
+        f"สร้างแผนงานเป็น JSON รายการ step ดังนี้:\n"
+        f"[\n"
+        f'  {{"id": 1, "action": "อ่าน/เขียน/รันโค้ด", "detail": "..."}},\n'
+        f'  {{"id": 2, "action": "edit_file", "detail": "..."}},\n'
+        f'  {{"id": 3, "action": "run_test", "detail": "..."}}\n'
+        f']\n\n'
+        f"ตอบกลับเป็น JSON list เท่านั้น ไม่ต้องอธิบายเพิ่ม"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": plan_prompt}],
+            temperature=0.3, max_tokens=2000
+        )
+        plan_text = resp.choices[0].message.content.strip()
+        # Try to parse as JSON list
+        try:
+            plan_steps = json.loads(plan_text)
+        except json.JSONDecodeError:
+            # If not JSON, wrap in a single step
+            plan_steps = [{"id": 1, "action": "general", "detail": plan_text}]
+    except Exception as e:
+        console.print(Text(f"Error สร้างแผน: {e}", style="red"))
+        return
+
+    # Step 3: Show plan to user
+    t = Text()
+    t.append("\n📋 แผนดำเนินการ:\n", style="bold cyan")
+    for step in plan_steps if isinstance(plan_steps, list) else [plan_steps]:
+        sid = step.get("id", "?")
+        action = step.get("action", "general")
+        detail = step.get("detail", str(step))
+        t.append(f"  {sid}. ", style="bold yellow")
+        t.append(f"[{action}] ", style="cyan")
+        t.append(f"{_truncate(detail, 120)}\n", style="")
+    console.print(Panel(t, title="Plan", border_style="blue"))
+
+    # Step 4: Confirm
+    confirm = input("\nเริ่มดำเนินการตามแผน? [y/N] ").strip().lower()
+    if confirm not in ("y", "yes", "เอา"):
+        console.print(Text("ยกเลิกแผน", style="yellow")); return
+
+    # Step 5: Execute plan step-by-step
+    agent = Agent()
+    results = []
+    for i, step in enumerate(plan_steps if isinstance(plan_steps, list) else [plan_steps]):
+        action = step.get("action", "general")
+        detail = step.get("detail", "")
+        console.print(Text(f"\n⏩ Step {i+1}/{len(plan_steps)}: [{action}]", style=C_TOOL))
+
+        if action in ("run_test", "test"):
+            result = agent.shell(f"python -m pytest {detail or '.'} -x -q 2>&1 | tail -20", timeout=60)
+        elif action in ("edit_file", "write", "create"):
+            result = agent.write_file(
+                step.get("path", "file.py"),
+                step.get("content", detail)
+            ) if "path" in step else agent.edit_file(
+                step.get("path", ""),
+                step.get("old_string", ""),
+                step.get("new_string", detail)
+            )
+        elif action in ("shell", "command", "run"):
+            result = agent.shell(detail, timeout=60)
+        elif action in ("read", "inspect"):
+            result = agent.read_file(detail or ".", limit=3000)
+        else:
+            # General: send to LLM with the detail as task
+            agent.messages.append({"role": "user", "content": detail})
+            result = chat_turn(agent, detail)
+
+        results.append({"step": i+1, "action": action, "result": result})
+        console.print(Text(f"   ✅ Step {i+1} เสร็จ", style=C_OK))
+
+    # Step 6: Summary
+    success = all(r.get("result") and "Error" not in str(r.get("result", "")) for r in results)
+    console.print(Panel(
+        Text(f"{'✅ แผนเสร็จสิ้น!' if success else '❌ มีข้อผิดพลาดบางข้อ'}  ({len(results)} steps)",
+             style="bold green" if success else "bold red"),
+        title="Plan Result"
+    ))
 
 
 def _load_webui():
@@ -2111,7 +2362,7 @@ def mcp_main(allow_exec: bool = False):
 
     def call_tool(name, arguments):
         if name in ("shell", "write_file", "edit_file", "run_python",
-                    "spawn_subagent") and not allow_exec:
+                    "spawn_subagent", "batch_edit_files", "run_test_loop") and not allow_exec:
             return {"content": [{"type": "text",
                     "text": f"Error: tool '{name}' ถูกปิดในโหมด MCP ปลอดภัย (รันด้วย --allow-exec)"}],
                     "isError": True}

@@ -1,8 +1,5 @@
-# ห้ามอัปโหลด key
-.env
-# python
+venv/
 __pycache__/
 *.pyc
-*.pyo
+.env
 .DS_Store
-.github/workflows/ci.yml
