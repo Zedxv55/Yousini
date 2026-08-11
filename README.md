@@ -14,8 +14,33 @@ Local Coding Agent สไตล์ Claude Code — รับคำสั่ง�
 - ⏳ **Background shell** — รันคำสั่งยาวแบบไม่บล็อก (`run_in_background`) + `/jobs`
 - 🔖 **Checkpoint/Rollback** — auto `git commit` ก่อนแก้ไฟล์ แล้ว `/rollback` ได้
 - 🔌 **MCP server** — `yousini mcp` ครอบ tools เป็น MCP server ให้ agent ภายนอกเรียกได้
+- 🧠 **ความจำระยะยาว (v2)** — จำความชอบ/ข้อเท็จจริง/บทเรียนข้าม session (`memory` tool, `/memory`)
+- 🛠️ **Self-improvement (v2)** — agent สร้าง/แก้ไขสกิลเองได้ (`skill_create` / `skill_patch`)
+- 🔍 **ค้นหา session ย้อนหลัง (v2)** — SQLite+FTS5, `/search <คำ>` รองรับภาษาไทย
+- ⌚ **Cron jobs (v2)** — งานอัตโนมัติตามเวลา `yousini cron` + `/cron`
+- 🔀 **Provider fallback (v2)** — โค้ต้าหมด/API ล่ม → สลับ provider สำรองอัตโนมัติ
+- 🔌 **MCP client (v2)** — โหลดเครื่องมือจาก MCP server ภายนอก (`mcp__<server>__<tool>`)
+- 📨 **Webhooks (v2)** — `POST /api/webhook/<ชื่อ>` ให้ระบบภายนอกสั่ง agent ทำงาน
+- 💬 **Telegram gateway (v2)** — คุยกับ Yousini ผ่าน Telegram bot
+- 👥 **Profiles (v2)** — แยก config/session/ความจำ/สกิล ต่อโพรไฟล์
 
 พัฒนาต่อยอดจากหนังสือ *ai-agent-book* (bojieli) โดยใช้ความสามารถ Tool Calling
+
+---
+
+## ✨ v2.0 — อัปเกรดเทียบเท่า Hermes Agent
+
+| ความสามารถ | วิธีใช้ |
+|---|---|
+| ความจำระยะยาว (จำข้าม session) | tool `memory` ในแชท หรือ `/memory add|list user\|agent ...` |
+| self-improvement (สร้าง/แก้สกิลเอง) | tools `skill_create` / `skill_patch` |
+| ค้นหา session ย้อนหลัง (ไทย + อังกฤษ) | `/search <คำ>` |
+| Cron jobs งานอัตโนมัติ | `/cron add 30m <prompt>`, `yousini cron [--once]` |
+| Provider fallback (สำรองโค้ต้า) | ใส่ `YOUSINI_FALLBACK_PROVIDERS=[{"base_url":"...","api_key":"..."}]` ใน .env — ดู `/providers` |
+| MCP client | `yousini mcp-add <ชื่อ> <คำสั่ง>` → เครื่องมือขึ้น `mcp__<ชื่อ>__<tool>` |
+| Webhooks | `yousini webhook-add <ชื่อ> <prompt> [--callback <url>]` → `POST /api/webhook/<ชื่อ>` |
+| Telegram gateway | `yousini telegram` (ตั้ง `YOUSINI_TG_TOKEN`) |
+| Profiles | `yousini profile <ชื่อ>` หรือ `YOUSINI_PROFILE=<ชื่อ>` |
 
 ---
 

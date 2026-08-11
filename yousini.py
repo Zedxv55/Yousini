@@ -1633,6 +1633,12 @@ except Exception as _mcp_err:
     if str(_mcp_err):
         pass  # ปิดเงียบ — ไม่ให้ MCP ที่พังทำลายการเริ่มต้น
 
+# ปกติ schema tools: Mistral/provider บางราย ไม่ยอมรับ "required": [] (ว่าง) → ลบออก
+for _t in TOOLS:
+    _fn = _t.get("function", {})
+    if _fn.get("required") == []:
+        _fn.pop("required", None)
+
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
 _TOOL_FIX_HINT = (
     "ข้อผิดพลาด: คุณพยายามเรียกใช้เครื่องมือที่ไม่มีในระบบ (เช่น repo_browser, python, "
