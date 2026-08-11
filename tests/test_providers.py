@@ -6,6 +6,22 @@ import yousini
 from yousini import _retryable, _load_providers, _FallbackClient
 
 
+class _FakeResp:
+    """openai v2 exceptions ต้องการ response ที่มี .request"""
+    def __init__(self, status=200):
+        self.request = object()
+        self.status_code = status
+
+
+def _mk_err(name, **kw):
+    """สร้าง openai exception แบบไม่เจอ constructor issue"""
+    import openai
+    cls = getattr(openai, name)
+    if name == "APIConnectionError":
+        return cls(request=object(), message="net")
+    return cls("err", response=_FakeResp(kw.get("status", 200)), body=None)
+
+
 class FakeCompletions:
     def __init__(self, owner):
         self.owner = owner
@@ -31,16 +47,15 @@ def test_load_providers_from_env(monkeypatch):
     ]))
     provs = _load_providers()
     base = [x for x in provs if x.get("api_key") != "k1" and x.get("api_key") != "k2"]
-    assert any(p["base_url"].startswith("groq") for p in provs)
-    assert any(p["base_url"].startswith("deepseek") for p in provs)
+    assert any("groq.com" in p["base_url"] for p in provs)
+    assert any("deepseek.com" in p["base_url"] for p in provs)
 
 
 def test_retryable_classification():
-    import openai
-    assert _retryable(openai.AuthenticationError("x", response=None, body=None))
-    assert _retryable(openai.RateLimitError("x", response=None, body=None))
-    assert _retryable(openai.APIConnectionError(request=None))
-    assert not _retryable(openai.BadRequestError("x", response=None, body=None))
+    assert _retryable(_mk_err("AuthenticationError"))
+    assert _retryable(_mk_err("RateLimitError"))
+    assert _retryable(_mk_err("APIConnectionError"))
+    assert not _retryable(_mk_err("BadRequestError"))
 
 
 def test_fallback_switches_on_error():
@@ -71,7 +86,7 @@ def test_fallback_switches_on_error():
 
         def _create(self, *a, **kw):
             calls.append("boom")
-            raise openai.RateLimitError("quota", response=None, body=None)
+            raise _mk_err("RateLimitError")
 
     fb._client = FakeBoom()
     fb.providers = [{"base_url": "a"}, {"base_url": "b"}]
@@ -81,7 +96,7 @@ def test_fallback_switches_on_error():
     orig_build = fb._build
     fb._build = lambda i: fb._clients[i]
     try:
-        r = fb.completions_create(model="x", messages=[])
+        r = fb.chat.completions.create(model="x", messages=[])
         assert r is ok
         assert calls == ["boom", "ok"]
     finally:
@@ -97,7 +112,7 @@ def test_fallback_exhausts_raises_last():
             self.chat = FakeChat(self)
 
         def _create(self, *a, **kw):
-            raise openai.RateLimitError("quota", response=None, body=None)
+            raise _mk_err("RateLimitError")
 
     fb._client = FakeBoom()
     fb.providers = [{"base_url": "a"}, {"base_url": "b"}]
@@ -105,7 +120,7 @@ def test_fallback_exhausts_raises_last():
     fb._build = lambda i: fb._clients[i]
     try:
         try:
-            fb.completions_create(model="x", messages=[])
+            fb.chat.completions.create(model="x", messages=[])
             assert False, "ควร raise"
         except openai.RateLimitError:
             pass
@@ -124,7 +139,7 @@ def test_non_retryable_no_switch():
 
         def _create(self, *a, **kw):
             calls.append("bad")
-            raise openai.BadRequestError("validation", response=None, body=None)
+            raise _mk_err("BadRequestError", status=400)
 
     fb._client = FakeBad()
     fb.providers = [{"base_url": "a"}, {"base_url": "b"}]
@@ -132,7 +147,7 @@ def test_non_retryable_no_switch():
     fb._build = lambda i: fb._clients[i]
     try:
         try:
-            fb.completions_create(model="x", messages=[])
+            fb.chat.completions.create(model="x", messages=[])
             assert False
         except openai.BadRequestError:
             pass
