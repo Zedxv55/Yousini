@@ -81,6 +81,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.table import Table
 
 console = Console()
 
@@ -371,6 +372,7 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
 - skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
 - search_sessions ค้นหาย้อนหลังใน session ก่อนหน้า (เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้)
+- symbols ค้นหาโครงสร้างโค้ดด้วย AST (symbol index): ก่อนแก้โค้ดให้หา def/refs ของฟังก์ชันที่เกี่ยวข้องก่อนเสมอ
 - cron          จัดการงานอัตโนมัติตามเวลา (list/add/remove/pause/resume)
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
@@ -511,12 +513,14 @@ def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
     return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
 
 
-def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str:
+def build_system_prompt(context_text: str, skills, memory_text: str = "", git_text: str = "") -> str:
     parts = [BASE_SYSTEM_PROMPT]
     if memory_text.strip():
         parts.append("=== ความจำระยะยาว (จำข้าม session) ===\n"
                      "ข้อมูลด้านล่างคือความจำที่บันทึกไว้ — ใช้เป็นแนวทางเสมอ:\n"
                      f"{memory_text}")
+    if git_text.strip():
+        parts.append(git_text)
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
@@ -824,10 +828,12 @@ class Agent:
             self.memory = MemoryManager()
         except Exception:
             self.memory = None
+        self._git_block = None   # ประวัติ git (คำนวณครั้งเดียวต่อ session)
         self.hooks = Hooks(hooks_dir, self.cwd)
         self.system_prompt = build_system_prompt(
             self.context_text, self.skills,
-            memory_text=self.memory.inject_text() if self.memory else "")
+            memory_text=self.memory.inject_text() if self.memory else "",
+            git_text=self._ensure_git_block())
         self.messages = [{"role": "system", "content": self.system_prompt}]
         # สถิติโทเค็น (best-effort: อ่านจาก usage ของ API ถ้ามี)
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -843,7 +849,8 @@ class Agent:
         self.skills = load_skill_index(self.cwd, self.skills_dir)
         self.system_prompt = build_system_prompt(
             self.context_text, self.skills,
-            memory_text=self.memory.inject_text() if self.memory else "")
+            memory_text=self.memory.inject_text() if self.memory else "",
+            git_text=self._ensure_git_block())
         # แทนที่ system message แรก
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0]["content"] = self.system_prompt
@@ -1338,6 +1345,64 @@ class Agent:
             return f"ไม่พบงาน #{job_id}"
         return "action ต้องเป็น list/add/remove/pause/resume (add ต้องมี schedule + prompt)"
 
+    def symbols_tool(self, action: str = "summary", name: str = "", query: str = "") -> str:
+        """ค้นหาโครงสร้างโค้ด — AST symbol index (go-to-definition, refs)"""
+        from yousini_symbols import SymbolIndex
+        try:
+            idx = SymbolIndex(self.cwd)
+        except Exception as e:
+            return f"ไม่สามารถ index โปรเจกต์ได้: {e}"
+        if action == "summary":
+            s = idx.summary()
+            kinds = " | ".join(f"{k}: {v}" for k, v in s["kinds"].items())
+            return f"Symbol index: {s['total']} สัญลักษณ์ ใน {s['files']} ไฟล์\n{kinds}"
+        if action in ("find", "def") and name:
+            hit = idx.find(name)
+            if not hit:
+                refs = idx.refs(name, limit=5)
+                if refs:
+                    rows = [{"kind": "ref", "name": name, "file": r["file"], "line": r["line"], "signature": r["text"]} for r in refs]
+                    return f"ไม่พบนิยามของ '{name}' แต่พบการอ้างอิง:\n" + idx.format(rows)
+                return f"ไม่พบ '{name}' ในโปรเจกต์"
+            return idx.format([hit])
+        if action == "refs" and name:
+            refs = idx.refs(name)
+            rows = [{"kind": "ref", "name": name, "file": r["file"], "line": r["line"], "signature": r["text"]} for r in refs]
+            return idx.format(rows) if rows else f"ไม่มี refs ของ '{name}' ในโปรเจกต์"
+        if action == "list":
+            q = (query or "").strip().lower()
+            hits = [e for e in idx.entries if q in e["name"].lower()][:30] if q else idx.entries[:30]
+            return idx.format(hits)
+        return "ใช้: action=summary|find|refs|list, name=<สัญลักษณ์>, query=<คำค้น>"
+
+    def _ensure_git_block(self):
+        """ประวัติ git ล่าสุด (context สำหรับ debug — คำนวณครั้งเดียวต่อ session)"""
+        if self._git_block is None:
+            try:
+                from yousini_git import last_commits_block
+                self._git_block = last_commits_block(8, self.cwd)
+            except Exception:
+                self._git_block = ""
+        return self._git_block
+
+    def git_tool(self, action: str = "log", n: int = 10, file: str = "", line: int = 1) -> str:
+        """ใช้ประวัติ git เป็น context: log|full|status|diff|blame"""
+        from yousini_git import recent_log, full_log, status_short, diff_stat, blame, is_repo
+        if not is_repo(self.cwd):
+            return "(ไม่อยู่ใน git repo — ข้ามการใช้งาน git)"
+        if action == "log":
+            return "\n".join(recent_log(n, self.cwd)) or "(ยังไม่มี commit)"
+        if action == "full":
+            return full_log(n, self.cwd)
+        if action == "status":
+            return status_short(self.cwd)
+        if action == "diff":
+            return diff_stat(self.cwd) or "(ไม่มี diff)"
+        if action == "blame" and file:
+            return blame(file, line, self.cwd)
+        return "ใช้: action=log|full|status|diff|blame, n=<จำนวน>, file=<ไฟล์>, line=<บรรทัด>"
+
+
     def search_sessions(self, query: str, limit: int = 10) -> str:
         """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
         try:
@@ -1598,6 +1663,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
     {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "cron", "description": "จัดการงานอัตโนมัติตามเวลา (เหมือน Hermes cronjob): action=list/add/remove/pause/resume — add ต้องการ schedule (เช่น '30m', '0 9 * * *', '2026-08-11T10:00:00') + prompt", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "list / add / remove / pause / resume"}, "schedule": {"type": "string", "description": "ช่วงเวลา เช่น 30m, every 2h, 0 9 * * *, ISO"}, "prompt": {"type": "string", "description": "งานที่ให้ agent ทำเมื่อถึงเวลา"}, "job_id": {"type": "integer", "description": "id งาน (สำหรับ remove/pause/resume)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "git", "description": "ใช้ประวัติ git เป็น context: log=รายการ commit ล่าสุด, full=log พร้อมผู้แต่ง/วันที่, status=ไฟล์ค้าง, diff=diff ยังไม่ commit, blame=ใครแก้บรรทัดนี้", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["log", "full", "status", "diff", "blame"]}, "n": {"type": "integer"}, "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "symbols", "description": "ค้นหาโครงสร้างโค้ดด้วย symbol index (AST-aware): summary=ภาพรวมโปรเจกต์, find=<ชื่อ>=go-to-definition, refs=<ชื่อ>=ทุกจุดอ้างอิง, list+query=รายการสัญลักษณ์", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "find", "refs", "list"]}, "name": {"type": "string"}, "query": {"type": "string"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
 
@@ -1619,6 +1686,8 @@ IMPL = {
     "skill_create": lambda a, k: k.skill_create(**a),
     "skill_patch": lambda a, k: k.skill_patch(**a),
     "search_sessions": lambda a, k: k.search_sessions(**a),
+    "symbols": lambda a, k: k.symbols_tool(**a),
+    "git": lambda a, k: k.git_tool(**a),
     "cron": lambda a, k: k.cron_tool(**a),
 }
 
@@ -1758,9 +1827,18 @@ def _run_subagent_loop(agent: Agent, task: str, max_iter: int = 6) -> str:
     return "(เอเจนต์ย่อยหมดรอบจำกัด — คืนผลลัพธ์ที่ได้)"
 
 
+def _prepare_user_content(user_text: str, cwd: str):
+    """แปลงข้อความผู้ใช้ → content blocks (รองรับรูปภาพ [img:...]) — เก็บเป็น str ถ้าไม่มีรูป"""
+    try:
+        from yousini_vision import content_with_images
+        return content_with_images(user_text, cwd)
+    except Exception:
+        return user_text
+
+
 def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": user_text})
+    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
     agent._trim()
     agent._auto_compact()
     tool_seen = False
@@ -1863,7 +1941,7 @@ def chat_turn(agent: Agent, user_text: str):
 # ---------------------------------------------------------------------------
 def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": user_text})
+    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
     agent._trim()
     agent._auto_compact()
     attempts = 0
@@ -2000,31 +2078,44 @@ def _gradient(text: str, colors):
 def _print_banner(agent: Agent):
     palette = ["#18d3ff", "#5ca8ff", "#7c5cff", "#b45cff", "#ff5cae"]
     console.print(_gradient(YOUSINI_ART, palette))
-    txt = Text()
-    txt.append("ผู้ช่วยเขียนโค้ดอัจฉริยะ", style="bold magenta")
-    txt.append("  ·  ทำงานบนเครื่องจริง + ออนไลน์  ·  เชื่อมต่อข้ามเครื่องได้\n\n", style="dim")
-    txt.append("  สมอง      ", style="dim"); txt.append(agent.model + "\n", style="bold cyan")
-    txt.append("  เชื่อมต่อ   ", style="dim"); txt.append(BASE_URL + "\n", style="dim")
-    txt.append("  โฟลเดอร์   ", style="dim"); txt.append(agent.cwd + "\n", style="dim")
-    txt.append("  โหมด      ", style="dim")
-    txt.append("เครื่อง + ออนไลน์", style="green")
-    txt.append("   ·   shell ", style="dim")
-    txt.append("ถามก่อน" if not agent.auto_run else "รันทันที", style="yellow")
-    ctx = "เปิด" if agent.context_text.strip() else "ปิด"
-    sk = len(agent.skills)
-    hk = "มี" if agent.hooks.has_hooks() else "ไม่มี"
-    txt.append(f"\n  บริบท(YOUSINI.md) ", style="dim"); txt.append(ctx + "\n", style="cyan")
-    txt.append("  สกิล      ", style="dim"); txt.append(f"{sk} ตัว\n", style="cyan")
-    txt.append("  hooks     ", style="dim"); txt.append(hk + "\n", style="cyan")
-    txt.append("\n  พิมพ์งานได้เลย  ·  ", style="dim")
-    txt.append("/help", style="bold cyan")
-    txt.append(" ดูคำสั่งทั้งหมด  ·  ", style="dim")
-    txt.append("yousini serve", style="bold cyan")
-    txt.append(" เปิดเว็บ UI  ·  ", style="dim")
-    txt.append("yousini connect <url>", style="bold cyan")
-    txt.append(" คุยข้ามเครื่อง", style="dim")
-    console.print(Panel(txt, border_style="magenta", padding=(1, 2),
-                        title="〔 พร้อมทำงาน 〕", subtitle="Yousini AI Agent"))
+
+    # --- เทเลเมทรีจริง แบบ JARVIS HUD ---
+    rows = [("สมอง", agent.model), ("เชื่อมต่อ", BASE_URL), ("โฟลเดอร์", agent.cwd)]
+    try:
+        from yousini_git import is_repo, status_short
+        if is_repo(agent.cwd):
+            br = status_short(agent.cwd).splitlines()[0]
+            rows.append(("git", br))
+    except Exception:
+        pass
+    try:
+        from yousini_symbols import SymbolIndex
+        s = SymbolIndex(agent.cwd).summary()
+        rows.append(("symbols", f"{s['total']} ตัว ({s['files']} ไฟล์)"))
+    except Exception:
+        pass
+    try:
+        from yousini_cron import JobStore
+        jobs = JobStore().load()
+        rows.append(("cron", f"{len([j for j in jobs if j.get('enabled')])} งานพร้อม"))
+    except Exception:
+        pass
+    try:
+        from yousini_memory import MemoryManager
+        m = MemoryManager()
+        rows.append(("memory", f"{len(m.inject_text().splitlines())} บรรทัด" if m.inject_text() else "ว่าง"))
+    except Exception:
+        pass
+    modes = "รันทันที(auto)" if agent.auto_run else "ถามก่อน"
+
+    t = Table.grid(padding=(0, 2))
+    t.add_column(style="bold cyan", justify="right")
+    t.add_column(style="dim")
+    for k, v in rows[:-1]:
+        t.add_row("▸ " + k, v)
+    t.add_row("▸ shell", f"{modes}  ·  skills {len(agent.skills)}  ·  hooks {'มี' if agent.hooks.has_hooks() else 'ไม่มี'}")
+    console.print(Panel(t, border_style="cyan", padding=(1, 3),
+                        title="〔 ◈ CORE ONLINE 〕", subtitle="Yousini — JARVIS mode · /help → คำสั่งทั้งหมด"))
 
 
 def _print_help():
@@ -2039,6 +2130,7 @@ def _print_help():
         ("/theme <ชื่อ>", "เปลี่ยนธีม (dark/notion/nord/tokyo-night)"),
         ("/permission <คำสั่ง>", "จัดการ on/off shell commands (add/list/remove/clear)"),
         ("/plan", "โหมดแผน: วางแผนก่อนทำ (กำลังพัฒนา)"),
+        ("/img <ไฟล์|url> [คำถาม]", "แนบรูปภาพให้โมเดลดู (ต้องใช้โมเดล vision เช่น pixtral-large-latest)"),
         ("/reload", "โหลด YOUSINI.md + skills ใหม่"),
         ("/skills", "แสดงสกิลที่โหลดอยู่"),
         ("/hooks", "แสดงสถานะ hooks"),
@@ -2046,6 +2138,8 @@ def _print_help():
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
+        ("/symbols [def|refs|list <คำ>]", "ค้นหาโครงสร้างโค้ด (AST symbol index)"),
+        ("/git [log|full|status|diff|blame]", "ดูประวัติ/สถานะ git เป็น context"),
         ("/cron", "ดู/จัดการงานอัตโนมัติ: add <schedule> <prompt> | remove <id> | pause|resume <id>"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
@@ -2808,6 +2902,49 @@ def _providers_cmd():
     console.print(Panel(t, title="Provider chain (fallback อัตโนมัติเมื่อโค้ต้าหมด)", border_style="magenta"))
 
 
+def _symbols_cmd(agent, args=""):
+    """/symbols | /symbols def <ชื่อ> | /symbols refs <ชื่อ> | /symbols list [คำ] — AST symbol index"""
+    parts = args.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    name = parts[1].strip() if len(parts) > 1 else ""
+    try:
+        if sub in ("def", "find"):
+            out = agent.symbols_tool(action="find", name=name)
+        elif sub == "refs":
+            out = agent.symbols_tool(action="refs", name=name)
+        elif sub == "list":
+            out = agent.symbols_tool(action="list", query=name)
+        else:
+            out = agent.symbols_tool(action="summary")
+    except Exception as e:
+        out = f"Error: {e}"
+    console.print(Panel(Text(out), title="🧭 Symbol Index", border_style="cyan"))
+
+
+def _git_cmd(agent, args=""):
+    """/git | /git log [n] | /git blame <ไฟล์> <บรรทัด> | /git status | /git diff | /git full"""
+    parts = args.split()
+    sub = parts[0].lower() if parts else "status"
+    try:
+        if sub == "log" and len(parts) > 1 and parts[1].isdigit():
+            out = agent.git_tool(action="log", n=int(parts[1]))
+        elif sub == "log":
+            out = agent.git_tool(action="log", n=10)
+        elif sub == "full":
+            out = agent.git_tool(action="full", n=int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6)
+        elif sub == "status":
+            out = agent.git_tool(action="status")
+        elif sub == "diff":
+            out = agent.git_tool(action="diff")
+        elif sub == "blame" and len(parts) >= 3:
+            out = agent.git_tool(action="blame", file=parts[1], line=int(parts[2]))
+        else:
+            out = "ใช้: /git | /git log [n] | /git full [n] | /git status | /git diff | /git blame <ไฟล์> <บรรทัด>"
+    except Exception as e:
+        out = f"Error: {e}"
+    console.print(Panel(Text(out), title="🌀 Git", border_style="green"))
+
+
 def _cron_cmd(agent, args=""):
     """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
     from yousini_cron import JobStore, parse_schedule
@@ -2995,9 +3132,23 @@ def _run_repl(agent: Agent):
             args = user_input[12:].strip()
             console.print(permission_cmd(args))
             continue
+        if low.startswith("/img "):
+            # แนบรูปภาพแล้วให้โมเดลดู (ต้องใช้โมเดล vision เช่น pixtral)
+            rest = user_input[5:].strip()
+            if not rest:
+                console.print(Text("ใช้: /img <path.png|url> [คำถาม]", style="yellow"))
+                continue
+            parts = rest.split(None, 1)
+            path, question = parts[0], (parts[1] if len(parts) > 1 else "ดูภาพนี้แล้วอธิบายให้ละเอียด")
+            chat_turn(agent, f"[img:{path}] {question}")
+            continue
         if low == "/plan":
             plan_mode()
             continue
+        if low == "/symbols" or low.startswith("/symbols "):
+            _symbols_cmd(agent, user_input[8:].strip()); continue
+        if low == "/git" or low.startswith("/git "):
+            _git_cmd(agent, user_input[4:].strip()); continue
         if low == "/cron" or low.startswith("/cron "):
             _cron_cmd(agent, user_input[5:].strip()); continue
         chat_turn(agent, user_input)
