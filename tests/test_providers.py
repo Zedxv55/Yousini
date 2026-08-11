@@ -11,6 +11,7 @@ class _FakeResp:
     def __init__(self, status=200):
         self.request = object()
         self.status_code = status
+        self.headers = {}
 
 
 def _mk_err(name, **kw):
