@@ -512,12 +512,14 @@ def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
     return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
 
 
-def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str:
+def build_system_prompt(context_text: str, skills, memory_text: str = "", git_text: str = "") -> str:
     parts = [BASE_SYSTEM_PROMPT]
     if memory_text.strip():
         parts.append("=== ความจำระยะยาว (จำข้าม session) ===\n"
                      "ข้อมูลด้านล่างคือความจำที่บันทึกไว้ — ใช้เป็นแนวทางเสมอ:\n"
                      f"{memory_text}")
+    if git_text.strip():
+        parts.append(git_text)
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
@@ -825,10 +827,12 @@ class Agent:
             self.memory = MemoryManager()
         except Exception:
             self.memory = None
+        self._git_block = None   # ประวัติ git (คำนวณครั้งเดียวต่อ session)
         self.hooks = Hooks(hooks_dir, self.cwd)
         self.system_prompt = build_system_prompt(
             self.context_text, self.skills,
-            memory_text=self.memory.inject_text() if self.memory else "")
+            memory_text=self.memory.inject_text() if self.memory else "",
+            git_text=self._ensure_git_block())
         self.messages = [{"role": "system", "content": self.system_prompt}]
         # สถิติโทเค็น (best-effort: อ่านจาก usage ของ API ถ้ามี)
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -844,7 +848,8 @@ class Agent:
         self.skills = load_skill_index(self.cwd, self.skills_dir)
         self.system_prompt = build_system_prompt(
             self.context_text, self.skills,
-            memory_text=self.memory.inject_text() if self.memory else "")
+            memory_text=self.memory.inject_text() if self.memory else "",
+            git_text=self._ensure_git_block())
         # แทนที่ system message แรก
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0]["content"] = self.system_prompt
@@ -1369,6 +1374,34 @@ class Agent:
             return idx.format(hits)
         return "ใช้: action=summary|find|refs|list, name=<สัญลักษณ์>, query=<คำค้น>"
 
+    def _ensure_git_block(self):
+        """ประวัติ git ล่าสุด (context สำหรับ debug — คำนวณครั้งเดียวต่อ session)"""
+        if self._git_block is None:
+            try:
+                from yousini_git import last_commits_block
+                self._git_block = last_commits_block(8, self.cwd)
+            except Exception:
+                self._git_block = ""
+        return self._git_block
+
+    def git_tool(self, action: str = "log", n: int = 10, file: str = "", line: int = 1) -> str:
+        """ใช้ประวัติ git เป็น context: log|full|status|diff|blame"""
+        from yousini_git import recent_log, full_log, status_short, diff_stat, blame, is_repo
+        if not is_repo(self.cwd):
+            return "(ไม่อยู่ใน git repo — ข้ามการใช้งาน git)"
+        if action == "log":
+            return "\n".join(recent_log(n, self.cwd)) or "(ยังไม่มี commit)"
+        if action == "full":
+            return full_log(n, self.cwd)
+        if action == "status":
+            return status_short(self.cwd)
+        if action == "diff":
+            return diff_stat(self.cwd) or "(ไม่มี diff)"
+        if action == "blame" and file:
+            return blame(file, line, self.cwd)
+        return "ใช้: action=log|full|status|diff|blame, n=<จำนวน>, file=<ไฟล์>, line=<บรรทัด>"
+
+
     def search_sessions(self, query: str, limit: int = 10) -> str:
         """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
         try:
@@ -1629,6 +1662,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
     {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "cron", "description": "จัดการงานอัตโนมัติตามเวลา (เหมือน Hermes cronjob): action=list/add/remove/pause/resume — add ต้องการ schedule (เช่น '30m', '0 9 * * *', '2026-08-11T10:00:00') + prompt", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "list / add / remove / pause / resume"}, "schedule": {"type": "string", "description": "ช่วงเวลา เช่น 30m, every 2h, 0 9 * * *, ISO"}, "prompt": {"type": "string", "description": "งานที่ให้ agent ทำเมื่อถึงเวลา"}, "job_id": {"type": "integer", "description": "id งาน (สำหรับ remove/pause/resume)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "git", "description": "ใช้ประวัติ git เป็น context: log=รายการ commit ล่าสุด, full=log พร้อมผู้แต่ง/วันที่, status=ไฟล์ค้าง, diff=diff ยังไม่ commit, blame=ใครแก้บรรทัดนี้", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["log", "full", "status", "diff", "blame"]}, "n": {"type": "integer"}, "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "symbols", "description": "ค้นหาโครงสร้างโค้ดด้วย symbol index (AST-aware): summary=ภาพรวมโปรเจกต์, find=<ชื่อ>=go-to-definition, refs=<ชื่อ>=ทุกจุดอ้างอิง, list+query=รายการสัญลักษณ์", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "find", "refs", "list"]}, "name": {"type": "string"}, "query": {"type": "string"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
@@ -1652,6 +1686,7 @@ IMPL = {
     "skill_patch": lambda a, k: k.skill_patch(**a),
     "search_sessions": lambda a, k: k.search_sessions(**a),
     "symbols": lambda a, k: k.symbols_tool(**a),
+    "git": lambda a, k: k.git_tool(**a),
     "cron": lambda a, k: k.cron_tool(**a),
 }
 
@@ -2080,6 +2115,7 @@ def _print_help():
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
         ("/symbols [def|refs|list <คำ>]", "ค้นหาโครงสร้างโค้ด (AST symbol index)"),
+        ("/git [log|full|status|diff|blame]", "ดูประวัติ/สถานะ git เป็น context"),
         ("/cron", "ดู/จัดการงานอัตโนมัติ: add <schedule> <prompt> | remove <id> | pause|resume <id>"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
@@ -2861,6 +2897,30 @@ def _symbols_cmd(agent, args=""):
     console.print(Panel(Text(out), title="🧭 Symbol Index", border_style="cyan"))
 
 
+def _git_cmd(agent, args=""):
+    """/git | /git log [n] | /git blame <ไฟล์> <บรรทัด> | /git status | /git diff | /git full"""
+    parts = args.split()
+    sub = parts[0].lower() if parts else "status"
+    try:
+        if sub == "log" and len(parts) > 1 and parts[1].isdigit():
+            out = agent.git_tool(action="log", n=int(parts[1]))
+        elif sub == "log":
+            out = agent.git_tool(action="log", n=10)
+        elif sub == "full":
+            out = agent.git_tool(action="full", n=int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6)
+        elif sub == "status":
+            out = agent.git_tool(action="status")
+        elif sub == "diff":
+            out = agent.git_tool(action="diff")
+        elif sub == "blame" and len(parts) >= 3:
+            out = agent.git_tool(action="blame", file=parts[1], line=int(parts[2]))
+        else:
+            out = "ใช้: /git | /git log [n] | /git full [n] | /git status | /git diff | /git blame <ไฟล์> <บรรทัด>"
+    except Exception as e:
+        out = f"Error: {e}"
+    console.print(Panel(Text(out), title="🌀 Git", border_style="green"))
+
+
 def _cron_cmd(agent, args=""):
     """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
     from yousini_cron import JobStore, parse_schedule
@@ -3053,6 +3113,8 @@ def _run_repl(agent: Agent):
             continue
         if low == "/symbols" or low.startswith("/symbols "):
             _symbols_cmd(agent, user_input[8:].strip()); continue
+        if low == "/git" or low.startswith("/git "):
+            _git_cmd(agent, user_input[4:].strip()); continue
         if low == "/cron" or low.startswith("/cron "):
             _cron_cmd(agent, user_input[5:].strip()); continue
         chat_turn(agent, user_input)
