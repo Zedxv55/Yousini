@@ -371,6 +371,7 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
 - skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
 - search_sessions ค้นหาย้อนหลังใน session ก่อนหน้า (เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้)
+- symbols ค้นหาโครงสร้างโค้ดด้วย AST (symbol index): ก่อนแก้โค้ดให้หา def/refs ของฟังก์ชันที่เกี่ยวข้องก่อนเสมอ
 - cron          จัดการงานอัตโนมัติตามเวลา (list/add/remove/pause/resume)
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
@@ -1338,6 +1339,36 @@ class Agent:
             return f"ไม่พบงาน #{job_id}"
         return "action ต้องเป็น list/add/remove/pause/resume (add ต้องมี schedule + prompt)"
 
+    def symbols_tool(self, action: str = "summary", name: str = "", query: str = "") -> str:
+        """ค้นหาโครงสร้างโค้ด — AST symbol index (go-to-definition, refs)"""
+        from yousini_symbols import SymbolIndex
+        try:
+            idx = SymbolIndex(self.cwd)
+        except Exception as e:
+            return f"ไม่สามารถ index โปรเจกต์ได้: {e}"
+        if action == "summary":
+            s = idx.summary()
+            kinds = " | ".join(f"{k}: {v}" for k, v in s["kinds"].items())
+            return f"Symbol index: {s['total']} สัญลักษณ์ ใน {s['files']} ไฟล์\n{kinds}"
+        if action in ("find", "def") and name:
+            hit = idx.find(name)
+            if not hit:
+                refs = idx.refs(name, limit=5)
+                if refs:
+                    rows = [{"kind": "ref", "name": name, "file": r["file"], "line": r["line"], "signature": r["text"]} for r in refs]
+                    return f"ไม่พบนิยามของ '{name}' แต่พบการอ้างอิง:\n" + idx.format(rows)
+                return f"ไม่พบ '{name}' ในโปรเจกต์"
+            return idx.format([hit])
+        if action == "refs" and name:
+            refs = idx.refs(name)
+            rows = [{"kind": "ref", "name": name, "file": r["file"], "line": r["line"], "signature": r["text"]} for r in refs]
+            return idx.format(rows) if rows else f"ไม่มี refs ของ '{name}' ในโปรเจกต์"
+        if action == "list":
+            q = (query or "").strip().lower()
+            hits = [e for e in idx.entries if q in e["name"].lower()][:30] if q else idx.entries[:30]
+            return idx.format(hits)
+        return "ใช้: action=summary|find|refs|list, name=<สัญลักษณ์>, query=<คำค้น>"
+
     def search_sessions(self, query: str, limit: int = 10) -> str:
         """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
         try:
@@ -1598,6 +1629,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
     {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "cron", "description": "จัดการงานอัตโนมัติตามเวลา (เหมือน Hermes cronjob): action=list/add/remove/pause/resume — add ต้องการ schedule (เช่น '30m', '0 9 * * *', '2026-08-11T10:00:00') + prompt", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "list / add / remove / pause / resume"}, "schedule": {"type": "string", "description": "ช่วงเวลา เช่น 30m, every 2h, 0 9 * * *, ISO"}, "prompt": {"type": "string", "description": "งานที่ให้ agent ทำเมื่อถึงเวลา"}, "job_id": {"type": "integer", "description": "id งาน (สำหรับ remove/pause/resume)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "symbols", "description": "ค้นหาโครงสร้างโค้ดด้วย symbol index (AST-aware): summary=ภาพรวมโปรเจกต์, find=<ชื่อ>=go-to-definition, refs=<ชื่อ>=ทุกจุดอ้างอิง, list+query=รายการสัญลักษณ์", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "find", "refs", "list"]}, "name": {"type": "string"}, "query": {"type": "string"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
 
@@ -1619,6 +1651,7 @@ IMPL = {
     "skill_create": lambda a, k: k.skill_create(**a),
     "skill_patch": lambda a, k: k.skill_patch(**a),
     "search_sessions": lambda a, k: k.search_sessions(**a),
+    "symbols": lambda a, k: k.symbols_tool(**a),
     "cron": lambda a, k: k.cron_tool(**a),
 }
 
@@ -2046,6 +2079,7 @@ def _print_help():
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
+        ("/symbols [def|refs|list <คำ>]", "ค้นหาโครงสร้างโค้ด (AST symbol index)"),
         ("/cron", "ดู/จัดการงานอัตโนมัติ: add <schedule> <prompt> | remove <id> | pause|resume <id>"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
@@ -2808,6 +2842,25 @@ def _providers_cmd():
     console.print(Panel(t, title="Provider chain (fallback อัตโนมัติเมื่อโค้ต้าหมด)", border_style="magenta"))
 
 
+def _symbols_cmd(agent, args=""):
+    """/symbols | /symbols def <ชื่อ> | /symbols refs <ชื่อ> | /symbols list [คำ] — AST symbol index"""
+    parts = args.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    name = parts[1].strip() if len(parts) > 1 else ""
+    try:
+        if sub in ("def", "find"):
+            out = agent.symbols_tool(action="find", name=name)
+        elif sub == "refs":
+            out = agent.symbols_tool(action="refs", name=name)
+        elif sub == "list":
+            out = agent.symbols_tool(action="list", query=name)
+        else:
+            out = agent.symbols_tool(action="summary")
+    except Exception as e:
+        out = f"Error: {e}"
+    console.print(Panel(Text(out), title="🧭 Symbol Index", border_style="cyan"))
+
+
 def _cron_cmd(agent, args=""):
     """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
     from yousini_cron import JobStore, parse_schedule
@@ -2998,6 +3051,8 @@ def _run_repl(agent: Agent):
         if low == "/plan":
             plan_mode()
             continue
+        if low == "/symbols" or low.startswith("/symbols "):
+            _symbols_cmd(agent, user_input[8:].strip()); continue
         if low == "/cron" or low.startswith("/cron "):
             _cron_cmd(agent, user_input[5:].strip()); continue
         chat_turn(agent, user_input)
