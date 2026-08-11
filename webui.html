@@ -3,177 +3,219 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Yousini · AI Coding Agent</title>
+<title>Yousini · Codex-style Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#05060a; --panel:rgba(18,20,32,.68); --stroke:rgba(255,255,255,.08);
-  --ink:#eef1ff; --dim:#8b90b4; --brand1:#7c5cff; --brand2:#18d3ff; --brand3:#ff5cae;
-  --ok:#3ddc97; --warn:#ffcf5c; --danger:#ff6b6b;
-  --mono:'JetBrains Mono',ui-monospace,monospace;
-  --sans:'Sora','IBM Plex Sans Thai',system-ui,sans-serif;
+  --bg:#0a0a0f; --bg2:#0e0e15; --panel:#12121c; --stroke:rgba(255,255,255,.07);
+  --ink:#e8e8f0; --dim:#8a8a9e; --faint:#5c5c72;
+  --accent:#4d9fff; --accent2:#7c5cff; --ok:#3ddc97; --warn:#ffcf5c; --danger:#ff6b6b;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --sans:'Inter','IBM Plex Sans Thai',system-ui,sans-serif;
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
-  font-family:var(--sans); color:var(--ink); background:var(--bg);
-  overflow:hidden; -webkit-font-smoothing:antialiased;
+  font-family:var(--sans); color:var(--ink); background:
+  radial-gradient(1200px 500px at 80% -10%, rgba(124,92,255,.10), transparent 60%),
+  radial-gradient(900px 420px at 10% 110%, rgba(77,159,255,.08), transparent 55%),
+  var(--bg);
+  overflow:hidden; -webkit-font-smoothing:antialiased; font-size:14px;
 }
-/* ---------- aurora background ---------- */
-.aurora{position:fixed;inset:-30%;z-index:0;filter:blur(80px);opacity:.55;pointer-events:none}
-.aurora span{position:absolute;border-radius:50%;mix-blend-mode:screen;animation:float 18s ease-in-out infinite}
-.aurora .a{width:46vw;height:46vw;background:var(--brand1);top:-6%;left:-4%}
-.aurora .b{width:40vw;height:40vw;background:var(--brand2);bottom:-10%;right:-6%;animation-delay:-6s}
-.aurora .c{width:34vw;height:34vw;background:var(--brand3);top:32%;left:38%;animation-delay:-11s}
-@keyframes float{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(4%,6%) scale(1.08)}66%{transform:translate(-5%,-4%) scale(.95)}}
-.grid{position:fixed;inset:0;z-index:0;pointer-events:none;
-  background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);
-  background-size:44px 44px;mask-image:radial-gradient(circle at 50% 40%,#000,transparent 78%)}
+::selection{background:rgba(77,159,255,.35)}
 /* ---------- layout ---------- */
-.wrap{position:relative;z-index:2;height:100%;display:flex;flex-direction:column;max-width:960px;margin:0 auto;padding:0 16px}
-header{display:flex;align-items:center;gap:14px;padding:20px 6px 14px}
-.logo{font-weight:800;font-size:26px;letter-spacing:.5px;
-  background:linear-gradient(100deg,var(--brand2),var(--brand1) 45%,var(--brand3));
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-  filter:drop-shadow(0 0 18px rgba(124,92,255,.35))}
-.tag{font-size:12px;color:var(--dim);letter-spacing:2px;text-transform:uppercase}
-.pill{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);
-  background:var(--panel);border:1px solid var(--stroke);padding:7px 12px;border-radius:999px;backdrop-filter:blur(12px)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);animation:pulse 2s infinite}
-.dot.off{background:var(--danger);box-shadow:0 0 10px var(--danger)}
-@keyframes pulse{50%{opacity:.4}}
+.app{height:100%;display:flex;flex-direction:column;max-width:920px;margin:0 auto;padding:0 18px}
+.top{display:flex;align-items:center;gap:12px;padding:14px 2px 10px;flex:none}
+.mark{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:1.5px;
+  background:linear-gradient(100deg,#e8e8f0,#7c5cff 60%,#4d9fff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.top .crumb{font-family:var(--mono);color:var(--faint);font-size:11.5px}
+.top .crumb b{color:var(--dim);font-weight:500}
+.spacer{flex:1}
+.kbd{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--stroke);border-radius:5px;padding:2px 6px;background:var(--panel)}
+#runBtn{cursor:pointer;font-family:var(--mono);font-size:12px;color:var(--ok);
+  border:1px solid rgba(61,220,151,.35);background:rgba(61,220,151,.07);border-radius:7px;padding:5px 10px;transition:.15s}
+#runBtn:hover{background:rgba(61,220,151,.15)}
+#runBtn:disabled{opacity:.35;cursor:not-allowed}
 /* ---------- chat ---------- */
-#chat{flex:1;overflow-y:auto;padding:8px 4px 20px;scroll-behavior:smooth}
-#chat::-webkit-scrollbar{width:8px}#chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:8px}
-.msg{display:flex;gap:12px;margin:18px 0;animation:rise .4s ease both}
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-.avatar{width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;font-weight:700;font-size:13px}
-.msg.user .avatar{background:linear-gradient(135deg,#2a2d44,#3a3f63);color:#cfd3ff}
-.msg.ai .avatar{background:linear-gradient(135deg,var(--brand1),var(--brand2));color:#06070d;box-shadow:0 0 22px rgba(24,211,255,.35)}
-.bubble{background:var(--panel);border:1px solid var(--stroke);border-radius:16px;padding:14px 16px;
-  backdrop-filter:blur(14px);max-width:100%;line-height:1.65;box-shadow:0 8px 30px rgba(0,0,0,.35)}
-.msg.user .bubble{background:linear-gradient(135deg,rgba(124,92,255,.16),rgba(24,211,255,.10));border-color:rgba(124,92,255,.3)}
-.bubble p{margin:.4em 0}.bubble pre{background:#0b0d16 !important;border:1px solid var(--stroke);border-radius:12px;padding:12px;overflow:auto;font-family:var(--mono);font-size:13px}
-.bubble code{font-family:var(--mono);font-size:.92em}.bubble :not(pre)>code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:6px}
-.who{font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
-/* tool chips */
-.tool{margin:8px 0;border:1px solid var(--stroke);border-left:3px solid var(--brand2);border-radius:10px;
-  background:rgba(24,211,255,.05);font-family:var(--mono);font-size:12.5px;overflow:hidden}
-.tool .h{padding:8px 12px;color:var(--brand2);font-weight:600;display:flex;gap:8px;align-items:center}
-.tool .b{padding:0 12px 10px;color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
-.cursor{display:inline-block;width:8px;height:1.1em;background:var(--brand2);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
+#chat{flex:1;overflow-y:auto;padding:6px 2px 16px;scroll-behavior:smooth}
+#chat::-webkit-scrollbar{width:8px}
+#chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:8px}
+#chat::-webkit-scrollbar-track{background:transparent}
+.turn{margin:20px 0 6px}
+.turn .who{font-family:var(--mono);font-size:10.5px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+.turn.user .who{color:var(--accent)}
+.turn .body{line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:14.5px}
+.turn.user .body{color:#c9ccdd;padding:2px 0 4px 14px;border-left:2px solid rgba(77,159,255,.4)}
+.turn.ai .body p{margin:.5em 0}
+.turn.ai .body pre{background:#0b0b12 !important;border:1px solid var(--stroke);border-radius:10px;
+  padding:12px 14px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6}
+.turn.ai .body code{font-family:var(--mono);font-size:.9em}
+.turn.ai .body :not(pre)>code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:5px}
+.turn.ai .body table{border-collapse:collapse;font-size:13px}
+.turn.ai .body th,.turn.ai .body td{border:1px solid var(--stroke);padding:6px 10px}
+/* activity (tool calls) */
+.act{margin:10px 0;font-family:var(--mono);font-size:12px;border:1px solid var(--stroke);
+  border-left:2px solid var(--accent);border-radius:9px;background:rgba(77,159,255,.045);overflow:hidden}
+.act.tool_result{border-left-color:var(--faint)}
+.act .h{padding:7px 12px;cursor:pointer;user-select:none;display:flex;gap:8px;align-items:center;color:#9fb8e0}
+.act .h .cmd{color:var(--dim);font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act .h .st{color:var(--faint);font-size:10px;letter-spacing:1px}
+.act .b{padding:0 12px 10px;color:#9aa2bd;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;display:none}
+.act.open .b{display:block}
+.act .b::before{content:'⎿';color:var(--faint);font-size:11px}
+.act .arrow{color:var(--faint);transition:.15s}
+.act.open .arrow{transform:rotate(90deg)}
+.expander{font-family:var(--mono);font-size:11px;color:var(--faint);padding:4px 12px 10px;cursor:pointer}
+.expander:hover{color:var(--dim)}
+.cursor{display:inline-block;width:9px;height:1.15em;background:var(--accent);vertical-align:-3px;margin-left:3px;animation:blink 1s steps(2) infinite}
 @keyframes blink{50%{opacity:0}}
 /* ---------- composer ---------- */
-.composer{padding:10px 8px 20px}
+.composer{flex:none;padding:8px 0 0}
 .box{display:flex;gap:10px;align-items:flex-end;background:var(--panel);border:1px solid var(--stroke);
-  border-radius:18px;padding:10px 10px 10px 16px;backdrop-filter:blur(16px);
-  box-shadow:0 12px 44px rgba(0,0,0,.45);transition:border-color .2s}
-.box:focus-within{border-color:rgba(124,92,255,.6);box-shadow:0 0 0 3px rgba(124,92,255,.15),0 12px 44px rgba(0,0,0,.45)}
-textarea{flex:1;background:none;border:0;outline:0;color:var(--ink);font-family:var(--sans);font-size:15px;resize:none;max-height:180px;line-height:1.5;padding:6px 0}
-textarea::placeholder{color:var(--dim)}
-.send{width:44px;height:44px;flex:none;border:0;border-radius:13px;cursor:pointer;color:#06070d;font-size:18px;
-  background:linear-gradient(135deg,var(--brand2),var(--brand1));transition:transform .12s,filter .2s}
-.send:hover{filter:brightness(1.12)}.send:active{transform:scale(.92)}.send:disabled{opacity:.4;cursor:not-allowed}
-.hint{text-align:center;color:var(--dim);font-size:11px;margin-top:10px;letter-spacing:.3px}
-.empty{display:grid;place-items:center;height:100%;text-align:center;gap:14px;color:var(--dim)}
-.empty h1{font-size:34px;margin:0;background:linear-gradient(100deg,var(--brand2),var(--brand1),var(--brand3));-webkit-background-clip:text;background-clip:text;color:transparent}
-.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:560px}
-.chip{border:1px solid var(--stroke);background:var(--panel);border-radius:999px;padding:8px 14px;font-size:13px;color:var(--ink);cursor:pointer;transition:.2s}
-.chip:hover{border-color:var(--brand1);background:rgba(124,92,255,.12)}
+  border-radius:12px;padding:10px 12px;transition:border-color .18s, box-shadow .18s}
+.box:focus-within{border-color:rgba(124,92,255,.55);box-shadow:0 0 0 3px rgba(124,92,255,.12),0 14px 40px rgba(0,0,0,.4)}
+textarea{flex:1;background:none;border:0;outline:0;color:var(--ink);font-family:var(--sans);font-size:14.5px;resize:none;max-height:180px;line-height:1.55;padding:4px 0}
+textarea::placeholder{color:var(--faint)}
+.send{width:40px;height:40px;flex:none;border:0;border-radius:10px;cursor:pointer;color:#0a0a0f;font-size:17px;font-weight:700;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));transition:transform .12s,filter .2s}
+.send:hover{filter:brightness(1.15)}.send:active{transform:scale(.9)}.send:disabled{opacity:.35;cursor:not-allowed}
+.shortcuts{display:flex;gap:14px;padding:8px 2px 2px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.shortcuts a{color:var(--faint);cursor:pointer;text-decoration:none}
+.shortcuts a:hover{color:var(--accent)}
+/* ---------- status bar ---------- */
+.statusbar{flex:none;display:flex;align-items:center;gap:16px;padding:9px 2px 12px;
+  font-family:var(--mono);font-size:11px;color:var(--faint)}
+.statusbar .seg{display:flex;align-items:center;gap:6px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 2.4s infinite}
+.dot.off{background:var(--danger);box-shadow:0 0 8px var(--danger)}
+@keyframes pulse{50%{opacity:.35}}
+.statusbar b{color:var(--dim);font-weight:500}
+/* empty state */
+.empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:var(--faint);text-align:center}
+.empty .big{font-family:var(--mono);font-size:13px;letter-spacing:4px;color:var(--dim)}
+.empty .big i{font-style:normal;color:var(--accent)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:620px}
+.chip{font-family:var(--mono);font-size:12px;border:1px solid var(--stroke);background:var(--panel);border-radius:8px;padding:8px 12px;color:var(--dim);cursor:pointer;transition:.15s}
+.chip:hover{border-color:var(--accent);color:var(--ink);background:rgba(77,159,255,.08)}
+.err{color:var(--danger);margin-top:6px}
 </style>
 </head>
 <body>
-<div class="aurora"><span class="a"></span><span class="b"></span><span class="c"></span></div>
-<div class="grid"></div>
-<div class="wrap">
-  <header>
-    <div class="logo">Yousini</div>
-    <div class="tag">AI&nbsp;Coding&nbsp;Agent</div>
-    <div class="pill"><span class="dot" id="dot"></span><span id="status">เชื่อมต่อแล้ว</span><span id="model" style="opacity:.7"></span></div>
-  </header>
+<div class="app">
+  <div class="top">
+    <div class="mark">◈ YOUSINI</div>
+    <div class="crumb">~/<b id="cwd">หน้าเว็บ</b></div>
+    <div class="spacer"></div>
+    <span class="kbd">Enter ส่ง</span>
+    <button id="runBtn" title="รันงานให้ agent (เหมือนพิมพ์ /run)">▸ RUN</button>
+  </div>
 
   <div id="chat">
     <div class="empty" id="empty">
-      <h1>สวัสดี ผม Yousini</h1>
-      <p>ผู้ช่วยเขียนโค้ดที่ทำงานบนเครื่องจริงและออนไลน์ได้ — สั่งงานได้เลย</p>
+      <div class="big">YOUSINI <i>CONSOLE</i> v2</div>
+      <p style="font-size:13px;max-width:480px">Agent ที่ทำงานบนเครื่องจริง — โค้ด, เชลล์, git, symbol index, ภาพ, cron</p>
       <div class="chips">
+        <div class="chip" onclick="quick(this)">/symbols def chat_turn</div>
+        <div class="chip" onclick="quick(this)">/git log 5</div>
         <div class="chip" onclick="quick(this)">สร้างเว็บ To-Do ด้วย HTML/JS</div>
-        <div class="chip" onclick="quick(this)">อธิบายโครงสร้างโปรเจกต์นี้</div>
-        <div class="chip" onclick="quick(this)">ค้นหาข่าว AI ล่าสุด</div>
-        <div class="chip" onclick="quick(this)">เขียนสคริปต์ backup ไฟล์</div>
+        <div class="chip" onclick="quick(this)">อธิบายโครงสร้างโปรเจกต์นี้ (ใช้ symbols)</div>
       </div>
     </div>
   </div>
 
   <div class="composer">
     <div class="box">
-      <textarea id="input" rows="1" placeholder="พิมพ์คำสั่งถึง Yousini…  (Enter ส่ง · Shift+Enter ขึ้นบรรทัด)"></textarea>
+      <textarea id="input" rows="1" placeholder="สั่งงาน Yousini…  ภาพ: พิมพ์ [img:ทางไปไฟล์.png] คำถาม"></textarea>
       <button class="send" id="send" title="ส่ง">➤</button>
     </div>
-    <div class="hint">Yousini ทำงานบนเครื่องของคุณได้จริง · ตรวจสอบผลลัพธ์ก่อนใช้งานเสมอ</div>
+    <div class="shortcuts">
+      <a onclick="quick(this)">/symbols list</a><a onclick="quick(this)">/git status</a>
+      <a onclick="quick(this)">/cron</a><a onclick="quick(this)">/search session</a>
+    </div>
   </div>
-</div>
 
-<script>
-marked.setOptions({breaks:true, highlight:(c,l)=>{try{return hljs.highlight(c,{language:hljs.getLanguage(l)?l:'plaintext'}).value}catch(e){return c}}});
-const chat=document.getElementById('chat'), input=document.getElementById('input'),
-      send=document.getElementById('send'), empty=document.getElementById('empty');
-let TOKEN=localStorage.getItem('yousini_token')||'';
-const SID=localStorage.getItem('yousini_sid')||(Math.random().toString(36).slice(2)+Date.now().toString(36));
-localStorage.setItem('yousini_sid',SID);
-let busy=false;
+  <div class="statusbar">
+      <div class="seg"><span class="dot" id="dot"></span><span id="status">เชื่อมต่อ…</span></div>
+      <div class="seg">model <b id="model">—</b></div>
+      <div class="seg">session <b id="sid">—</b></div>
+      <div class="seg" id="usage" style="margin-left:auto">tok —</div>
+    </div>
+  </div>
+  <script>
+  const chat=document.getElementById('chat'), input=document.getElementById('input'),
+        send=document.getElementById('send'), empty=document.getElementById('empty');
+  let TOKEN=localStorage.getItem('yousini_token')||'';
+  const SID=localStorage.getItem('yousini_sid')||(Math.random().toString(36).slice(2)+Date.now().toString(36));
+  localStorage.setItem('yousini_sid',SID);
+  document.getElementById('sid').textContent=SID.slice(0,6);
+  let busy=false, turnAI=null, actStack=[], usage={};
 
-function setStatus(ok,msg,model){document.getElementById('dot').className='dot'+(ok?'':' off');
-  document.getElementById('status').textContent=msg; if(model)document.getElementById('model').textContent=' · '+model;}
-fetch('info').then(r=>r.json()).then(d=>setStatus(true,'เชื่อมต่อแล้ว',d.model)).catch(()=>setStatus(false,'ออฟไลน์'));
+  function setStatus(ok,msg,model){
+    document.getElementById('dot').className='dot'+(ok?'':' off');
+    document.getElementById('status').textContent=msg;
+    if(model)document.getElementById('model').textContent=model;}
+  fetch('info').then(r=>r.json()).then(d=>{setStatus(true,'ออนไลน์',d.model);
+    if(d.cwd)document.getElementById('cwd').textContent=d.cwd;})
+    .catch(()=>setStatus(false,'ออฟไลน์'));
 
-input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px'});
-input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go()}});
-send.onclick=go;
-function quick(el){input.value=el.textContent;go()}
+  function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+  function md(s){try{return marked.parse(s)}catch(e){return esc(s)}}
 
-function addMsg(role,html){ if(empty)empty.remove();
-  const m=document.createElement('div');m.className='msg '+role;
-  m.innerHTML=`<div class="avatar">${role==='user'?'คุณ':'Y'}</div>`+
-    `<div style="min-width:0;flex:1"><div class="who">${role==='user'?'คุณ':'Yousini'}</div><div class="bubble"></div></div>`;
-  chat.appendChild(m);chat.scrollTop=chat.scrollHeight;
-  const b=m.querySelector('.bubble'); if(html!==undefined)b.textContent=html; return b;}
+  input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px'});
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go()}});
+  send.onclick=go; document.getElementById('runBtn').onclick=()=>go();
+  function quick(el){input.value=el.textContent.trim();go()}
 
-async function go(){
-  const text=input.value.trim(); if(!text||busy)return;
-  addMsg('user',text); input.value='';input.style.height='auto';
-  busy=true;send.disabled=true;
-  const bubble=addMsg('ai'); let acc='';
-  const cur=document.createElement('span');cur.className='cursor';bubble.appendChild(cur);
-  try{
-    const res=await fetch('api/chat',{method:'POST',headers:{'Content-Type':'application/json',
-      'X-Yousini-Token':TOKEN},body:JSON.stringify({message:text,session:SID})});
-    if(res.status===401){const t=prompt('เซิร์ฟเวอร์ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t);busy=false;send.disabled=false;bubble.parentElement.parentElement.remove();return go();}}
-    const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
-    while(true){const {value,done}=await reader.read();if(done)break;
-      buf+=dec.decode(value,{stream:true});const parts=buf.split('\n\n');buf=parts.pop();
-      for(const p of parts){const line=p.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;
-        const ev=JSON.parse(line.slice(5));
-        if(ev.type==='token'){acc+=ev.text;cur.remove();bubble.innerHTML=marked.parse(acc);bubble.appendChild(cur);}
-        else if(ev.type==='tool'){cur.remove();
-          const t=document.createElement('div');t.className='tool';
-          t.innerHTML=`<div class="h">⏺ ${ev.name}</div><div class="b">${esc(ev.args)}</div>`;
-          bubble.appendChild(t);bubble.appendChild(cur);}
-        else if(ev.type==='tool_result'){const tools=bubble.querySelectorAll('.tool');
-          const last=tools[tools.length-1];if(last)last.querySelector('.b').textContent+='\n⎿ '+ev.result;}
-        else if(ev.type==='final'){if(ev.text){acc=ev.text;bubble.innerHTML=marked.parse(acc);}}
-        else if(ev.type==='error'){bubble.innerHTML+=`<div style="color:var(--danger)">⚠ ${esc(ev.text)}</div>`;}
-        chat.scrollTop=chat.scrollHeight;}
-    }
-  }catch(e){bubble.innerHTML+=`<div style="color:var(--danger)">⚠ การเชื่อมต่อขัดข้อง: ${esc(e.message)}</div>`;setStatus(false,'ออฟไลน์');}
-  cur.remove();bubble.querySelectorAll('pre code').forEach(el=>hljs.highlightElement(el));
-  busy=false;send.disabled=false;input.focus();
-}
-function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-</script>
-</body>
-</html>
+  function addTurn(role){
+    if(empty)empty.remove();
+    const t=document.createElement('div');t.className='turn '+role;
+    t.innerHTML=`<div class="who">${role==='user'?'YOU · คุณ':'YOUSINI · agent'}</div><div class="body"></div>`;
+    chat.appendChild(t);chat.scrollTop=chat.scrollHeight;return t;}
+
+  function addAct(kind,name,args,result){
+    const a=document.createElement('div');a.className='act '+(kind==='result'?'tool_result':'tool');
+    a.innerHTML=`<div class="h"><span class="arrow">▸</span><span class="cmd">${kind==='result'?'⎿ ผลลัพธ์':esc(name)}</span><span class="st">${kind==='result'?'':'tool'}</span></div><div class="b"></div>`;
+    a.querySelector('.h').onclick=()=>a.classList.toggle('open');
+    const b=a.querySelector('.b');
+    if(kind==='result')b.textContent=result; else b.textContent=args;
+    if(turnAI)turnAI.appendChild(a);
+    chat.scrollTop=chat.scrollHeight;return a;}
+
+  async function go(){
+    const text=input.value.trim(); if(!text||busy)return;
+    addTurn('user').querySelector('.body').textContent=text;
+    input.value='';input.style.height='auto';
+    busy=true;send.disabled=true;document.getElementById('runBtn').disabled=true;
+    turnAI=addTurn('ai'); const bubble=turnAI.querySelector('.body');
+    const cur=document.createElement('span');cur.className='cursor';bubble.appendChild(cur);
+    let acc='',exp=null;
+    try{
+      const res=await fetch('api/chat',{method:'POST',headers:{'Content-Type':'application/json',
+        'X-Yousini-Token':TOKEN},body:JSON.stringify({message:text,session:SID})});
+      if(res.status===401){const t=prompt('เซิร์ฟเวอร์ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t);busy=false;send.disabled=false;document.getElementById('runBtn').disabled=false;turnAI.remove();return go();}}
+      const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+      while(true){const {value,done}=await reader.read();if(done)break;
+        buf+=dec.decode(value,{stream:true});const parts=buf.split('\n\n');buf=parts.pop();
+        for(const p of parts){const line=p.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;
+          let ev;try{ev=JSON.parse(line.slice(5))}catch(e){continue}
+          if(ev.type==='token'){acc+=ev.text;cur.remove();bubble.innerHTML=md(acc);bubble.appendChild(cur);}
+          else if(ev.type==='tool'){cur.remove();addAct('tool',ev.name,ev.args||'');bubble.appendChild(cur);}
+          else if(ev.type==='tool_result'){addAct('result',ev.name||'', '', ev.result||'');}
+          else if(ev.type==='final'){acc=ev.text;bubble.innerHTML=md(acc);
+            if(ev.usage){usage=ev.usage;document.getElementById('usage').textContent='in '+usage.prompt_tokens+'/out '+usage.completion_tokens;}}
+          else if(ev.type==='error'){bubble.innerHTML+=`<div class="err">⚠ ${esc(ev.text)}</div>`;}
+          const acts=turnAI.querySelectorAll('.act'); if(acts.length>4&&!exp){
+            exp=document.createElement('div');exp.className='expander';exp.textContent='⋯ ดู tool calls ทั้งหมด ('+acts.length+')';
+            exp.onclick=()=>{turnAI.querySelectorAll('.act').forEach(a=>a.style.display='');exp.remove()};
+            turnAI.appendChild(exp); acts.forEach(a=>{if(a.style.display==='')a.style.display='none';});
+            exp.style.display='block';}
+          chat.scrollTop=chat.scrollHeight;}
+      }
+    }catch(e){bubble.innerHTML+=`<div class="err">⚠ การเชื่อมต่อขัดข้อง: ${esc(e.message)}</div>`;setStatus(false,'ออฟไลน์');}
+    cur.remove();turnAI.querySelectorAll('pre code').forEach(el=>{try{hljs.highlightElement(el)}catch(e){}});
+    busy=false;send.disabled=false;document.getElementById('runBtn').disabled=false;input.focus();
+  }
+  </script>
+  </body>
+  </html>

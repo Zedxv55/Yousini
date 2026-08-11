@@ -81,6 +81,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.table import Table
 
 console = Console()
 
@@ -2077,31 +2078,44 @@ def _gradient(text: str, colors):
 def _print_banner(agent: Agent):
     palette = ["#18d3ff", "#5ca8ff", "#7c5cff", "#b45cff", "#ff5cae"]
     console.print(_gradient(YOUSINI_ART, palette))
-    txt = Text()
-    txt.append("ผู้ช่วยเขียนโค้ดอัจฉริยะ", style="bold magenta")
-    txt.append("  ·  ทำงานบนเครื่องจริง + ออนไลน์  ·  เชื่อมต่อข้ามเครื่องได้\n\n", style="dim")
-    txt.append("  สมอง      ", style="dim"); txt.append(agent.model + "\n", style="bold cyan")
-    txt.append("  เชื่อมต่อ   ", style="dim"); txt.append(BASE_URL + "\n", style="dim")
-    txt.append("  โฟลเดอร์   ", style="dim"); txt.append(agent.cwd + "\n", style="dim")
-    txt.append("  โหมด      ", style="dim")
-    txt.append("เครื่อง + ออนไลน์", style="green")
-    txt.append("   ·   shell ", style="dim")
-    txt.append("ถามก่อน" if not agent.auto_run else "รันทันที", style="yellow")
-    ctx = "เปิด" if agent.context_text.strip() else "ปิด"
-    sk = len(agent.skills)
-    hk = "มี" if agent.hooks.has_hooks() else "ไม่มี"
-    txt.append(f"\n  บริบท(YOUSINI.md) ", style="dim"); txt.append(ctx + "\n", style="cyan")
-    txt.append("  สกิล      ", style="dim"); txt.append(f"{sk} ตัว\n", style="cyan")
-    txt.append("  hooks     ", style="dim"); txt.append(hk + "\n", style="cyan")
-    txt.append("\n  พิมพ์งานได้เลย  ·  ", style="dim")
-    txt.append("/help", style="bold cyan")
-    txt.append(" ดูคำสั่งทั้งหมด  ·  ", style="dim")
-    txt.append("yousini serve", style="bold cyan")
-    txt.append(" เปิดเว็บ UI  ·  ", style="dim")
-    txt.append("yousini connect <url>", style="bold cyan")
-    txt.append(" คุยข้ามเครื่อง", style="dim")
-    console.print(Panel(txt, border_style="magenta", padding=(1, 2),
-                        title="〔 พร้อมทำงาน 〕", subtitle="Yousini AI Agent"))
+
+    # --- เทเลเมทรีจริง แบบ JARVIS HUD ---
+    rows = [("สมอง", agent.model), ("เชื่อมต่อ", BASE_URL), ("โฟลเดอร์", agent.cwd)]
+    try:
+        from yousini_git import is_repo, status_short
+        if is_repo(agent.cwd):
+            br = status_short(agent.cwd).splitlines()[0]
+            rows.append(("git", br))
+    except Exception:
+        pass
+    try:
+        from yousini_symbols import SymbolIndex
+        s = SymbolIndex(agent.cwd).summary()
+        rows.append(("symbols", f"{s['total']} ตัว ({s['files']} ไฟล์)"))
+    except Exception:
+        pass
+    try:
+        from yousini_cron import JobStore
+        jobs = JobStore().load()
+        rows.append(("cron", f"{len([j for j in jobs if j.get('enabled')])} งานพร้อม"))
+    except Exception:
+        pass
+    try:
+        from yousini_memory import MemoryManager
+        m = MemoryManager()
+        rows.append(("memory", f"{len(m.inject_text().splitlines())} บรรทัด" if m.inject_text() else "ว่าง"))
+    except Exception:
+        pass
+    modes = "รันทันที(auto)" if agent.auto_run else "ถามก่อน"
+
+    t = Table.grid(padding=(0, 2))
+    t.add_column(style="bold cyan", justify="right")
+    t.add_column(style="dim")
+    for k, v in rows[:-1]:
+        t.add_row("▸ " + k, v)
+    t.add_row("▸ shell", f"{modes}  ·  skills {len(agent.skills)}  ·  hooks {'มี' if agent.hooks.has_hooks() else 'ไม่มี'}")
+    console.print(Panel(t, border_style="cyan", padding=(1, 3),
+                        title="〔 ◈ CORE ONLINE 〕", subtitle="Yousini — JARVIS mode · /help → คำสั่งทั้งหมด"))
 
 
 def _print_help():
