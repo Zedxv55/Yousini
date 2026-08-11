@@ -155,14 +155,30 @@ CONTEXT_FILE = os.getenv("YOUSINI_CONTEXT", "YOUSINI.md")
 # โฟลเดอร์สกิล (relative ต่อ cwd)
 SKILLS_DIR = os.getenv("YOUSINI_SKILLS", "skills")
 # สกิลระดับเครื่อง (ติดตั้งผ่าน `yousini skill install`) — โหลดร่วมกับ ./skills ของโปรเจกต์
-GLOBAL_SKILLS_DIR = Path(os.getenv("YOUSINI_GLOBAL_SKILLS", str(Path.home() / ".yousini" / "skills")))
+def _profile_root() -> Path:
+    """รากของ data dir — รองรับโพรไฟล์ (YOUSINI_PROFILE env หรือ ~/.yousini/.active_profile)"""
+    base = Path.home() / ".yousini"
+    p = os.getenv("YOUSINI_PROFILE", "").strip()
+    active = p
+    if not active:
+        try:
+            f = base / ".active_profile"
+            if f.is_file():
+                active = f.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    if active and active not in ("", "default"):
+        return base / "profiles" / active
+    return base
+
+
+GLOBAL_SKILLS_DIR = Path(os.getenv("YOUSINI_GLOBAL_SKILLS", str(_profile_root() / "skills")))
 # โฟลเดอร์ hooks: ถ้าไม่ระบุ จะหา ./.yousini/hooks แล้ว ~/.yousini/hooks
 HOOKS_DIR = os.getenv("YOUSINI_HOOKS", "")
 # เปิด/ปิด auto-checkpoint (git commit ก่อนแก้ไฟล์)
 CHECKPOINT = os.getenv("YOUSINI_CHECKPOINT", "1") == "1"
 # ที่เก็บ session
-SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS",
-                              str(Path.home() / ".yousini" / "sessions")))
+SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS", str(_profile_root() / "sessions")))
 
 # Web search provider (ทางเลือกเสริม: ใช้ API key ของผู้ให้บริการค้นหาจริง แทน scraping)
 # ตั้ง YOUSINI_SEARCH_PROVIDER=brave|serpapi|tavily แล้วใส่ key ผ่านตัวแปรที่สอดคล้อง
@@ -2111,7 +2127,7 @@ def _print_hooks(agent: Agent):
 # ============================================================
 # CONFIGURATION & THEMES
 # ============================================================
-CONFIG_DIR = Path.home() / ".yousini"
+CONFIG_DIR = _profile_root()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 THEMES = {
@@ -2487,6 +2503,22 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/api/webhook/"):
+                name = path[len("/api/webhook/"):].strip("/")
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    payload = json.loads(self.rfile.read(length) or "{}")
+                except Exception:
+                    payload = {}
+                from yousini_webhook import run_webhook
+                ok, out = run_webhook(name, payload)
+                return self._send(200 if ok else 404,
+                                  json.dumps({"ok": ok, "name": name, "result": str(out)[:2000]},
+                                             ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             if path != "/api/chat":
                 return self._send(404, "not found")
             if not self._auth_ok():
@@ -3012,7 +3044,7 @@ def cron_main(interval=60, once=False):
 
     def run_fn(job):
         agent = Agent(interactive=False, cwd=job.get("cwd") or os.getcwd())
-        chat_turn(agent, job["prompt"], stream=False)
+        chat_turn(agent, job["prompt"])
         out = agent.messages[-1].get("content", "") if agent.messages else ""
         try:
             SessionStore(SESSION_DIR).save(f"cron-{job['name']}", agent.messages,
@@ -3106,6 +3138,79 @@ def main():
         subcmd = o.get("_", [])[0] if o.get("_") else ""
         perm_args = " ".join(o.get("_", [])[1:]) if len(o.get("_", [])) > 1 else ""
         permission_cmd(subcmd + " " + perm_args)  # CLI permission command
+        return
+
+    # ---- subcommand: webhook-add / webhook-rm / webhook-list ----
+    if argv and argv[0] in ("webhook-add", "webhook-rm", "webhook-list"):
+        from yousini_webhook import WebhookStore
+        ws = WebhookStore()
+        if argv[0] == "webhook-list":
+            hooks = ws.load()
+            if not hooks:
+                console.print(Text("ยังไม่มี webhook — ใช้ yousini webhook-add <ชื่อ> <prompt>", style="yellow"))
+            else:
+                t = Text()
+                for h in hooks:
+                    t.append(f"• {h['name']}: {str(h['prompt'])[:70]}\n", style="cyan")
+                console.print(Panel(t, title="Webhooks", border_style="magenta"))
+            return
+        if argv[0] == "webhook-add":
+            rest = argv[1:]
+            if len(rest) < 2:
+                console.print(Text("ใช้: yousini webhook-add <ชื่อ> <prompt> [--cwd <dir>] [--callback <url>]", style="red"))
+                return
+            name = rest[0].lstrip("/")
+            prompt = rest[1]
+            cwd, cb = None, ""
+            if "--cwd" in rest:
+                i = rest.index("--cwd")
+                if i + 1 < len(rest):
+                    cwd = rest[i + 1]
+            if "--callback" in rest:
+                i = rest.index("--callback")
+                if i + 1 < len(rest):
+                    cb = rest[i + 1]
+            ws.add(name, prompt, cwd=cwd, callback_url=cb)
+            console.print(Text(f"เพิ่ม webhook '/{name}' แล้ว (POST /api/webhook/{name} ใน serve)", style="green"))
+            return
+        if argv[0] == "webhook-rm" and len(argv) > 1:
+            ws.remove(argv[1].lstrip("/"))
+            console.print(Text(f"ลบ webhook '{argv[1].lstrip('/')}' แล้ว", style="yellow"))
+            return
+
+    # ---- subcommand: telegram (gateway) ----
+    if argv and argv[0] == "telegram":
+        o = _parse_flags(argv[1:])
+        token = o.get("token") or os.getenv("YOUSINI_TG_TOKEN", "")
+        chat = o.get("chat") or os.getenv("YOUSINI_TG_CHAT_ID", "")
+        if not token:
+            console.print(Text("ต้องมี token — ตั้ง YOUSINI_TG_TOKEN หรือ --token <bot token> (จาก BotFather)", style="red"))
+            return
+        from yousini_telegram import TelegramBot
+
+        def reply_fn(text, cid):
+            agent = Agent(interactive=False)
+            chat_turn(agent, text)
+            return agent.messages[-1].get("content", "") if agent.messages else ""
+
+        bot = TelegramBot(token, chat_id=chat)
+        console.print(Text("Telegram gateway เริ่มแล้ว — รอข้อความ (Ctrl+C เพื่อหยุด)", style="cyan"))
+        bot.run_forever(reply_fn)
+        return
+
+    # ---- subcommand: profile ----
+    if argv and argv[0] == "profile":
+        if len(argv) > 1:
+            name = argv[1] if argv[1] != "default" else ""
+            act = Path.home() / ".yousini" / ".active_profile"
+            if name:
+                act.write_text(name, encoding="utf-8")
+                console.print(Text(f"สลับโพรไฟล์เป็น '{name}' แล้ว — รีสตาร์ทเพื่อเริ่มใช้ (data อยู่ ~/.yousini/profiles/{name}/)", style="green"))
+            else:
+                act.unlink(missing_ok=True)
+                console.print(Text("กลับสู่โพรไฟล์ default แล้ว", style="yellow"))
+        else:
+            print("โพรไฟล์ปัจจุบัน:", _profile_root())
         return
 
     # ---- subcommand: mcp-add / mcp-list / mcp-rm (MCP client config) ----

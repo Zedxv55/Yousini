@@ -12,7 +12,23 @@ Yousini Memory — ความจำระยะยาว (เทียบเ�
 import os
 from pathlib import Path
 
-MEMORY_DIR = Path(os.environ.get("YOUSINI_MEMORY", str(Path.home() / ".yousini" / "memory")))
+def _profile_root():
+    """ราก data dir ตามโพรไฟล์ (ตรงกับ yousini.py::_profile_root)"""
+    base = Path.home() / ".yousini"
+    p = os.environ.get("YOUSINI_PROFILE", "").strip()
+    if not p:
+        try:
+            f = base / ".active_profile"
+            if f.is_file():
+                p = f.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    if p and p not in ("", "default"):
+        return base / "profiles" / p
+    return base
+
+
+MEMORY_DIR = Path(os.environ.get("YOUSINI_MEMORY", str(_profile_root() / "memory")))
 DEFAULT_LIMIT = 2000   # ตัวอักษรสูงสุดต่อไฟล์ (กันบริบทบวม)
 
 
