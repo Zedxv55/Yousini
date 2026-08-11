@@ -28,7 +28,7 @@ Local Coding Agent สไตล์ Claude Code — รับคำสั่ง�
 
 ---
 
-## ✨ v2.0 — อัปเกรดเทียบเท่า Hermes Agent
+## ✨ v2.1 — Code Intelligence + Vision + Design
 
 | ความสามารถ | วิธีใช้ |
 |---|---|
@@ -40,7 +40,11 @@ Local Coding Agent สไตล์ Claude Code — รับคำสั่ง�
 | MCP client | `yousini mcp-add <ชื่อ> <คำสั่ง>` → เครื่องมือขึ้น `mcp__<ชื่อ>__<tool>` |
 | Webhooks | `yousini webhook-add <ชื่อ> <prompt> [--callback <url>]` → `POST /api/webhook/<ชื่อ>` |
 | Telegram gateway | `yousini telegram` (ตั้ง `YOUSINI_TG_TOKEN`) |
-| Profiles | `yousini profile <ชื่อ>` หรือ `YOUSINI_PROFILE=<ชื่อ>` |
+| Profiles (แยกข้อมูลต่อโพรไฟล์) | `yousini profile <ชื่อ>` / `YOUSINI_PROFILE=<ชื่อ>` |
+| 🔍 **Code intelligence (AST)** | tool `symbols` / `/symbols def|refs|list` — tree-sitter symbol index + go-to-definition |
+| 🌿 **Git awareness** | tool `git` / `/git log|full|status|diff|blame` — ประวัติ commit ถูก inject เข้า context อัตโนมัติ |
+| 👁️ **Vision/Image input** | พิมพ์ `[img:path.png] คำถาม` หรือ `/img` — base64 content block (โมเดล vision เช่น `mistral-large-latest`) |
+| 🖥️ **Web UI สไตล์ Codex** | `yousini serve` → จอ console: status bar, tool-call timeline, RUN button |
 
 ---
 
