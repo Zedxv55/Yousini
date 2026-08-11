@@ -239,6 +239,7 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
 - skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
 - search_sessions ค้นหาย้อนหลังใน session ก่อนหน้า (เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้)
+- cron          จัดการงานอัตโนมัติตามเวลา (list/add/remove/pause/resume)
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
 - manage_todos จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า): action=add/update/complete/start/delete/list — ใช้แสดงแผนงานให้ผู้ใช้เห็นชัดเจนก่อนลงมือ
@@ -1175,6 +1176,36 @@ class Agent:
                 return f"แก้สกิล '{name}' แล้ว"
         return f"ไม่พบสกิล '{name}'"
 
+    def cron_tool(self, action: str, schedule: str = "", prompt: str = "", job_id: int = None) -> str:
+        """จัดการงานอัตโนมัติตามเวลา (เทียบเท่า Hermes cronjob): list/add/remove/pause/resume"""
+        from yousini_cron import JobStore, parse_schedule
+        store = JobStore()
+        if action == "list":
+            rows = store.list()
+            if not rows:
+                return "ยังไม่มีงาน cron"
+            return "\n".join(
+                f"#{j['id']} {'▶' if j['enabled'] else '⏸'} {j['name']} [{j['schedule']}] "
+                f"รันล่าสุด {j['last_run'] or '—'} → {j['prompt'][:60]}" for j in rows)
+        if action == "add":
+            if parse_schedule(schedule)[0] == "invalid":
+                return f"schedule ไม่ถูกต้อง: {schedule} (ลอง 30m, 0 9 * * *, 2026-08-11T10:00:00)"
+            if not prompt:
+                return "ต้องใส่ prompt"
+            j = store.add(prompt[:30], schedule, prompt, cwd=self.cwd)
+            return f"เพิ่มงาน #{j['id']} '{j['name']}' แล้ว (ทุก {schedule})"
+        if action == "remove" and job_id:
+            if store.get(job_id):
+                store.remove(job_id)
+                return f"ลบงาน #{job_id} แล้ว"
+            return f"ไม่พบงาน #{job_id}"
+        if action in ("pause", "resume") and job_id:
+            j = store.set_enabled(job_id, action == "resume")
+            if j:
+                return f"งาน #{job_id} {'▶ resume แล้ว' if action == 'resume' else '⏸ pause แล้ว'}"
+            return f"ไม่พบงาน #{job_id}"
+        return "action ต้องเป็น list/add/remove/pause/resume (add ต้องมี schedule + prompt)"
+
     def search_sessions(self, query: str, limit: int = 10) -> str:
         """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
         try:
@@ -1434,6 +1465,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "memory", "description": "จัดการความจำระยะยาว (จำข้าม session เหมือน Hermes memory): action add/remove/replace/list, target user (ข้อมูลผู้ใช้) หรือ agent (บันทึกของ agent) — บันทึกเฉพาะข้อเท็จจริง/ความชอบ/บทเรียนที่ควรจำข้าม session ห้ามบันทึกความคืบหน้างานชั่วคราว", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / remove / replace / list"}, "target": {"type": "string", "description": "user หรือ agent"}, "content": {"type": "string", "description": "ข้อความ (สำหรับ add/replace)"}, "old_text": {"type": "string", "description": "ข้อความค้นหาในรายการเดิม (สำหรับ remove/replace)"}}, "required": ["action", "target"]}}},
     {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
     {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "cron", "description": "จัดการงานอัตโนมัติตามเวลา (เหมือน Hermes cronjob): action=list/add/remove/pause/resume — add ต้องการ schedule (เช่น '30m', '0 9 * * *', '2026-08-11T10:00:00') + prompt", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "list / add / remove / pause / resume"}, "schedule": {"type": "string", "description": "ช่วงเวลา เช่น 30m, every 2h, 0 9 * * *, ISO"}, "prompt": {"type": "string", "description": "งานที่ให้ agent ทำเมื่อถึงเวลา"}, "job_id": {"type": "integer", "description": "id งาน (สำหรับ remove/pause/resume)"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
 
@@ -1455,6 +1487,7 @@ IMPL = {
     "skill_create": lambda a, k: k.skill_create(**a),
     "skill_patch": lambda a, k: k.skill_patch(**a),
     "search_sessions": lambda a, k: k.search_sessions(**a),
+    "cron": lambda a, k: k.cron_tool(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1864,6 +1897,7 @@ def _print_help():
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
+        ("/cron", "ดู/จัดการงานอัตโนมัติ: add <schedule> <prompt> | remove <id> | pause|resume <id>"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
         ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
@@ -1880,6 +1914,7 @@ def _print_help():
         ("yousini connect <url> [--token รหัส]", "คุยกับ Yousini อีกเครื่องผ่านเน็ต"),
         ("yousini mcp [--allow-exec]", "เปิดเป็น MCP server (stdio)"),
         ("yousini resume", "โหลด session ล่าสุดแล้วเข้าสู่แชท"),
+        ("yousini cron [--interval 60|--once]", "รันงาน cron ตามเวลา (daemon / รอบเดียว)"),
     ]
     t = Text()
     t.append("  คำสั่งใน REPL\n", style="bold magenta")
@@ -2590,6 +2625,61 @@ def _default_session_name(cwd: str) -> str:
     return f"cli-{os.path.basename(os.path.abspath(cwd))}-{h % 100000}"
 
 
+def _cron_cmd(agent, args=""):
+    """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
+    from yousini_cron import JobStore, parse_schedule
+    store = JobStore()
+    parts = args.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    if not sub:
+        rows = store.list()
+        if not rows:
+            console.print(Text("ยังไม่มีงาน cron — ใช้ /cron add <schedule> <prompt> เช่น /cron add 30m สรุปงานวันนี้", style="yellow"))
+            return
+        t = Text()
+        for j in rows:
+            st = "▶" if j["enabled"] else "⏸"
+            t.append(f"{st} #{j['id']} {j['name']} ", style="bold cyan")
+            t.append(f"[{j['schedule']}]  รันล่าสุด: {j['last_run'] or '—'}\n", style="dim")
+            t.append(f"   {j['prompt'][:80]}\n", style="white")
+        console.print(Panel(t, title=f"Cron jobs ({len(rows)})", border_style="magenta"))
+        return
+    if sub == "add" and len(parts) > 1:
+        sch, _, prompt = parts[1].partition(" ")
+        if not prompt:
+            console.print(Text("ใช้: /cron add <schedule> <prompt> เช่น /cron add 0 9 * * * สรุปข่าวเช้า", style="yellow"))
+            return
+        if parse_schedule(sch)[0] == "invalid":
+            console.print(Text(f"schedule '{sch}' ไม่ถูกต้อง (ลอง 30m, 0 9 * * *, 2026-08-11T10:00:00)", style="red"))
+            return
+        j = store.add(prompt[:30], sch, prompt, cwd=agent.cwd)
+        console.print(Text(f"เพิ่มงาน #{j['id']} '{j['name']}' แล้ว (ทุก {sch})", style="green"))
+        return
+    if sub == "remove" and len(parts) > 1:
+        try:
+            jid = int(parts[1])
+        except ValueError:
+            console.print(Text("ใส่ id ตัวเลข", style="red")); return
+        if store.get(jid):
+            store.remove(jid)
+            console.print(Text(f"ลบงาน #{jid} แล้ว", style="yellow"))
+        else:
+            console.print(Text(f"ไม่พบงาน #{jid}", style="red"))
+        return
+    if sub in ("pause", "resume") and len(parts) > 1:
+        try:
+            jid = int(parts[1])
+        except ValueError:
+            console.print(Text("ใส่ id ตัวเลข", style="red")); return
+        j = store.set_enabled(jid, sub == "resume")
+        if j:
+            console.print(Text(f"งาน #{jid} {'▶ resume แล้ว' if sub == 'resume' else '⏸ pause แล้ว'}", style="green"))
+        else:
+            console.print(Text(f"ไม่พบงาน #{jid}", style="red"))
+        return
+    console.print(Text("ใช้: /cron | /cron add <schedule> <prompt> | /cron remove <id> | /cron pause|resume <id>", style="yellow"))
+
+
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
@@ -2723,6 +2813,8 @@ def _run_repl(agent: Agent):
         if low == "/plan":
             plan_mode()
             continue
+        if low == "/cron" or low.startswith("/cron "):
+            _cron_cmd(agent, user_input[5:].strip()); continue
         chat_turn(agent, user_input)
         # Phase 3: auto-save session ทุก turn เพื่อให้ค้นหาย้อนหลังได้
         try:
@@ -2765,6 +2857,45 @@ def resume_main():
             agent.model = d["meta"]["model"]
         console.print(Text(f"โหลด session ล่าสุด '{name}' ({len(agent.messages)} ข้อความ)", style="green"))
     _run_repl(agent)
+
+
+def cron_main(interval=60, once=False):
+    """รันงาน cron ที่ถึงเวลา — loop (daemon) หรือ --once รอบเดียว"""
+    from yousini_cron import JobStore, run_due_jobs
+
+    def run_fn(job):
+        agent = Agent(interactive=False, cwd=job.get("cwd") or os.getcwd())
+        chat_turn(agent, job["prompt"], stream=False)
+        out = agent.messages[-1].get("content", "") if agent.messages else ""
+        try:
+            SessionStore(SESSION_DIR).save(f"cron-{job['name']}", agent.messages,
+                                           {"model": agent.model, "cwd": agent.cwd, "cron": True})
+        except Exception:
+            pass
+        return out
+
+    store = JobStore()
+    if once:
+        for r in run_due_jobs(store, run_fn):
+            tag = f"[{r['job']}]"
+            if r["error"]:
+                console.print(Text(f"{tag} ❌ {r['error']}", style="red"))
+            else:
+                console.print(Text(f"{tag} ✅ ({len(r['output'] or '')} ตัวอักษร)", style="green"))
+        return
+    console.print(Text(f"Cron daemon เริ่มแล้ว (ตรวจทุก {interval}s) — Ctrl+C เพื่อหยุด", style="cyan"))
+    while True:
+        try:
+            for r in run_due_jobs(store, run_fn):
+                tag = f"[{r['job']}]"
+                if r["error"]:
+                    console.print(Text(f"{tag} ❌ {r['error']}", style="red"))
+                else:
+                    console.print(Text(f"{tag} ✅ สรุปสั้น: {str(r['output'])[:120]}", style="green"))
+        except KeyboardInterrupt:
+            console.print(Text("\nหยุด cron daemon", style="dim"))
+            break
+        time.sleep(interval)
 
 
 def main():
@@ -2828,6 +2959,13 @@ def main():
         subcmd = o.get("_", [])[0] if o.get("_") else ""
         perm_args = " ".join(o.get("_", [])[1:]) if len(o.get("_", [])) > 1 else ""
         permission_cmd(subcmd + " " + perm_args)  # CLI permission command
+        return
+
+    # ---- subcommand: cron (งานอัตโนมัติตามเวลา) ----
+    if argv and argv[0] == "cron":
+        o = _parse_flags(argv[1:])
+        cron_main(interval=int(o.get("interval", 60)) if str(o.get("interval", "60")).isdigit() else 60,
+                  once=bool(o.get("once")))
         return
 
     # ---- subcommand: resume ----
