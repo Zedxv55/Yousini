@@ -1826,9 +1826,18 @@ def _run_subagent_loop(agent: Agent, task: str, max_iter: int = 6) -> str:
     return "(เอเจนต์ย่อยหมดรอบจำกัด — คืนผลลัพธ์ที่ได้)"
 
 
+def _prepare_user_content(user_text: str, cwd: str):
+    """แปลงข้อความผู้ใช้ → content blocks (รองรับรูปภาพ [img:...]) — เก็บเป็น str ถ้าไม่มีรูป"""
+    try:
+        from yousini_vision import content_with_images
+        return content_with_images(user_text, cwd)
+    except Exception:
+        return user_text
+
+
 def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": user_text})
+    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
     agent._trim()
     agent._auto_compact()
     tool_seen = False
@@ -1931,7 +1940,7 @@ def chat_turn(agent: Agent, user_text: str):
 # ---------------------------------------------------------------------------
 def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": user_text})
+    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
     agent._trim()
     agent._auto_compact()
     attempts = 0
@@ -2107,6 +2116,7 @@ def _print_help():
         ("/theme <ชื่อ>", "เปลี่ยนธีม (dark/notion/nord/tokyo-night)"),
         ("/permission <คำสั่ง>", "จัดการ on/off shell commands (add/list/remove/clear)"),
         ("/plan", "โหมดแผน: วางแผนก่อนทำ (กำลังพัฒนา)"),
+        ("/img <ไฟล์|url> [คำถาม]", "แนบรูปภาพให้โมเดลดู (ต้องใช้โมเดล vision เช่น pixtral-large-latest)"),
         ("/reload", "โหลด YOUSINI.md + skills ใหม่"),
         ("/skills", "แสดงสกิลที่โหลดอยู่"),
         ("/hooks", "แสดงสถานะ hooks"),
@@ -3107,6 +3117,16 @@ def _run_repl(agent: Agent):
         if low.startswith("/permission "):
             args = user_input[12:].strip()
             console.print(permission_cmd(args))
+            continue
+        if low.startswith("/img "):
+            # แนบรูปภาพแล้วให้โมเดลดู (ต้องใช้โมเดล vision เช่น pixtral)
+            rest = user_input[5:].strip()
+            if not rest:
+                console.print(Text("ใช้: /img <path.png|url> [คำถาม]", style="yellow"))
+                continue
+            parts = rest.split(None, 1)
+            path, question = parts[0], (parts[1] if len(parts) > 1 else "ดูภาพนี้แล้วอธิบายให้ละเอียด")
+            chat_turn(agent, f"[img:{path}] {question}")
             continue
         if low == "/plan":
             plan_mode()
