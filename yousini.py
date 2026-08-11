@@ -175,7 +175,123 @@ if not API_KEY:
     console.print(Text("Error: ไม่พบ API Key โปรดคัดลอก .env.example เป็น .env แล้วใส่ YOUSINI_API_KEY", style="red"))
     sys.exit(1)
 
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+# ---- Provider Fallback Chain (Phase 5 — เทียบเท่า credential pool ของ Hermes) ----
+# ลำดับ: ตัวหลัก (env) → YOUSINI_FALLBACK_PROVIDERS (JSON) → config.json["providers"]
+# เมื่อเจอ auth/rate/network/5xx → สลับไป provider ถัดไปอัตโนมัติ
+
+
+def _load_providers():
+    """รายการ provider ทั้งหมด (base_url, api_key) เรียงตามลำดับการลอง"""
+    provs = [{"base_url": BASE_URL, "api_key": API_KEY}]
+    raw = os.getenv("YOUSINI_FALLBACK_PROVIDERS", "")
+    if raw:
+        try:
+            for p in json.loads(raw):
+                if isinstance(p, dict) and p.get("api_key") and p.get("base_url"):
+                    provs.append(p)
+        except Exception:
+            pass
+    cfg_file = globals().get("CONFIG_FILE")  # นิยามทีหลังบรรทัด 2082 — กัน NameError ตอน import
+    if cfg_file is not None:
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            prov_cfg = cfg.get("providers", [])
+            if isinstance(prov_cfg, dict):  # รูปแบบ login: {ชื่อ: {base_url, api_key, model}}
+                prov_cfg = [_fix_provider(p) for p in prov_cfg.values()]
+            for p in prov_cfg:
+                if isinstance(p, dict) and p.get("api_key") and p.get("base_url"):
+                    provs.append(p)
+        except Exception:
+            pass
+    # ตัดตัวซ้ำ (key+url เดียวกัน)
+    seen, out = set(), []
+    for p in provs:
+        k = (p["base_url"], p["api_key"])
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def _fix_provider(p: dict) -> dict:
+    """เติมค่าเริ่มต้นให้ provider จาก config.json (ฐาน URL ตามผู้ให้บริการ)"""
+    if p.get("base_url"):
+        return p
+    url_map = {"mistral": "https://api.mistral.ai/v1", "groq": "https://api.groq.com/openai/v1",
+               "openrouter": "https://openrouter.ai/api/v1", "deepseek": "https://api.deepseek.com/v1",
+               "openai": "https://api.openai.com/v1", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai"}
+    name = str(p.get("name", "")).lower()
+    for k, v in url_map.items():
+        if k in name:
+            p["base_url"] = v
+            break
+    return p
+
+
+def _retryable(e) -> bool:
+    """error ที่ควรลอง provider ถัดไป (auth/โค้ต้า/network/5xx)"""
+    from openai import (AuthenticationError, RateLimitError, APIConnectionError,
+                        InternalServerError, Timeout)
+    if isinstance(e, (AuthenticationError, RateLimitError, APIConnectionError,
+                      InternalServerError, Timeout)):
+        return True
+    try:
+        from openai import APIStatusError
+        if isinstance(e, APIStatusError) and e.status_code >= 500:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+class _Completions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, *a, **kw):
+        return self.owner._create(*a, **kw)
+
+
+class _Chat:
+    def __init__(self, owner):
+        self.completions = _Completions(owner)
+
+
+class _FallbackClient:
+    """proxy แทน OpenAI client — ลอง provider ตามลำดับ สลับอัตโนมัติเมื่อ error"""
+
+    def __init__(self, providers=None):
+        self.providers = providers if providers is not None else _load_providers()
+        self.current = 0
+        self.chat = _Chat(self)
+        self._client = self._build(0)
+
+    def _build(self, i):
+        p = self.providers[i]
+        return OpenAI(api_key=p["api_key"], base_url=p["base_url"])
+
+    def _create(self, *args, **kwargs):
+        attempts = 0
+        last_e = None
+        while True:
+            try:
+                return self._client.chat.completions.create(*args, **kwargs)
+            except Exception as e:
+                last_e = e
+                if not _retryable(e):
+                    raise
+                attempts += 1
+                if attempts >= len(self.providers):
+                    break
+                self.current = (self.current + 1) % len(self.providers)
+                self._client = self._build(self.current)
+                console.print(Text(
+                    f"⚠️ Provider #{self.current} ({self.providers[self.current]['base_url']}) "
+                    f"ล่ม: {e.__class__.__name__} → สลับอัตโนมัติ", style="yellow"))
+        raise last_e
+
+
+client = _FallbackClient()
 
 # คำสั่งอันตราย → ขออนุมัติเสมอ + เตือน
 DANGER_RE = [re.compile(p) for p in [
@@ -1901,6 +2017,7 @@ def _print_help():
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
         ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
+        ("/providers", "แสดง provider ที่ใช้ + ลำดับสำรอง (fallback อัตโนมัติ)"),
         ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
@@ -2035,7 +2152,7 @@ def _apply_provider_config(cfg: dict) -> bool:
             os.environ["YOUSINI_MODEL"] = p["model"]
             MODEL = p["model"]; activated = True
     if activated:
-        client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+        client = _FallbackClient()  # rebuild ทั้ง chain (ตัวหลัก = provider ที่เพิ่ง activate)
     return activated
 
 
@@ -2625,6 +2742,22 @@ def _default_session_name(cwd: str) -> str:
     return f"cli-{os.path.basename(os.path.abspath(cwd))}-{h % 100000}"
 
 
+def _providers_cmd():
+    """แสดง provider chain + ตัวที่กำลังใช้"""
+    provs = _load_providers()
+    if not provs:
+        console.print(Text("ไม่มี provider กำหนด (ใส่ YOUSINI_API_KEY ใน .env)", style="yellow"))
+        return
+    t = Text()
+    for i, p in enumerate(provs):
+        mark = "▶" if i == client.current else " "
+        host = str(p["base_url"]).replace("https://", "").replace("/v1", "").rstrip("/")
+        key = str(p["api_key"])
+        t.append(f"{mark} #{i + 1} {host}  ", style="bold cyan" if i == client.current else "dim")
+        t.append(f"key={key[:6]}…{key[-3:]}\n", style="dim")
+    console.print(Panel(t, title="Provider chain (fallback อัตโนมัติเมื่อโค้ต้าหมด)", border_style="magenta"))
+
+
 def _cron_cmd(agent, args=""):
     """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
     from yousini_cron import JobStore, parse_schedule
@@ -2711,6 +2844,8 @@ def _run_repl(agent: Agent):
             console.print(Panel(agent.jobs.summary(), title="Background jobs", border_style="magenta")); continue
         if low == "/todos":
             agent._print_todos(); continue
+        if low == "/providers":
+            _providers_cmd(); continue
         if low.startswith("/memory"):
             args = user_input[7:].strip()
             if not args:
