@@ -342,8 +342,12 @@ def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
         return f"Error: อ่านสกิลไม่ได้: {e}"
 
 
-def build_system_prompt(context_text: str, skills) -> str:
+def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str:
     parts = [BASE_SYSTEM_PROMPT]
+    if memory_text.strip():
+        parts.append("=== ความจำระยะยาว (จำข้าม session) ===\n"
+                     "ข้อมูลด้านล่างคือความจำที่บันทึกไว้ — ใช้เป็นแนวทางเสมอ:\n"
+                     f"{memory_text}")
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
@@ -625,8 +629,16 @@ class Agent:
         self.skills_dir = skills_dir
         self.context_text = load_context_text(self.cwd, self.context_file)
         self.skills = load_skill_index(self.cwd, self.skills_dir)
+        # ความจำระยะยาว (Phase 1 — เทียบเท่า Hermes memory)
+        try:
+            from yousini_memory import MemoryManager
+            self.memory = MemoryManager()
+        except Exception:
+            self.memory = None
         self.hooks = Hooks(hooks_dir, self.cwd)
-        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        self.system_prompt = build_system_prompt(
+            self.context_text, self.skills,
+            memory_text=self.memory.inject_text() if self.memory else "")
         self.messages = [{"role": "system", "content": self.system_prompt}]
         # สถิติโทเค็น (best-effort: อ่านจาก usage ของ API ถ้ามี)
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -637,10 +649,12 @@ class Agent:
         self.quiet_mode = False
 
     def refresh_context(self):
-        """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
+        """โหลดบริบท/สกิล/ความจำใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
         self.context_text = load_context_text(self.cwd, self.context_file)
         self.skills = load_skill_index(self.cwd, self.skills_dir)
-        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        self.system_prompt = build_system_prompt(
+            self.context_text, self.skills,
+            memory_text=self.memory.inject_text() if self.memory else "")
         # แทนที่ system message แรก
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0]["content"] = self.system_prompt
@@ -1069,6 +1083,12 @@ class Agent:
     def load_skill(self, name: str) -> str:
         return load_skill_full(self.cwd, name, self.skills_dir)
 
+    def memory_tool(self, action: str, target: str, content: str = "", old_text: str = "") -> str:
+        """จัดการความจำระยะยาว (Phase 1 — เทียบเท่า Hermes memory)"""
+        if not self.memory:
+            return "memory ไม่พร้อมใช้งาน (ติดตั้ง yousini_memory.py ไม่สำเร็จ)"
+        return self.memory.act(action, target, content=content, old_text=old_text)
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1311,6 +1331,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "manage_todos", "description": "จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) เพื่อแสดงแผนงานให้ผู้ใช้เห็นชัดเจน: action สามารถเป็น add/update/complete/start/delete/list — add ต้องการ content, complete/start/update/delete ต้องการ todo_id", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / update / complete / start / delete / list"}, "content": {"type": "string", "description": "ข้อความรายการ (สำหรับ add/update)"}, "todo_id": {"type": "integer", "description": "รหัสรายการ (สำหรับ update/complete/start/delete)"}, "status": {"type": "string", "description": "สถานะใหม่ (ไม่บังคับ)"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "batch_edit_files", "description": "แก้ไขหลายไฟล์พร้อมกัน + commit อะตอมิก เหมาะสำหรับ refactor ใหญ่ ใส่รายการ edits = [{path, old_string?, new_string?}]", "parameters": {"type": "object", "properties": {"edits": {"type": "array", "description": "รายการแก้ไฟล์ แต่ละอันมี path + new_string (เรียกใช้ old_string ถ้าต้องการ replace)", "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "new_string"]}}}, "required": ["edits"]}}},
     {"type": "function", "function": {"name": "run_test_loop", "description": "รัน test แล้วแก้ไขอัตโนมัติซ้ำ (auto-fix loop) — เหมาะกับ TDD workflow ใส่ test_cmd เช่น pytest -x", "parameters": {"type": "object", "properties": {"test_cmd": {"type": "string", "description": "คำสั่งรัน test (ค่าเริ่มต้น pytest)", "default": "pytest"}, "max_iterations": {"type": "integer", "description": "จำนวนรอบสูงสุด (ค่าเริ่มต้น 3)", "default": 3}}, "required": []}}},
+    {"type": "function", "function": {"name": "memory", "description": "จัดการความจำระยะยาว (จำข้าม session เหมือน Hermes memory): action add/remove/replace/list, target user (ข้อมูลผู้ใช้) หรือ agent (บันทึกของ agent) — บันทึกเฉพาะข้อเท็จจริง/ความชอบ/บทเรียนที่ควรจำข้าม session ห้ามบันทึกความคืบหน้างานชั่วคราว", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / remove / replace / list"}, "target": {"type": "string", "description": "user หรือ agent"}, "content": {"type": "string", "description": "ข้อความ (สำหรับ add/replace)"}, "old_text": {"type": "string", "description": "ข้อความค้นหาในรายการเดิม (สำหรับ remove/replace)"}}, "required": ["action", "target"]}}},
 ]
 
 IMPL = {
@@ -1327,6 +1348,7 @@ IMPL = {
     "manage_todos": lambda a, k: k.manage_todos(**a),
     "batch_edit_files": lambda a, k: k.batch_edit_files(**a),
     "run_test_loop": lambda a, k: k.run_test_loop(**a),
+    "memory": lambda a, k: k.memory_tool(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1737,6 +1759,7 @@ def _print_help():
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
+        ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
         ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
@@ -2489,6 +2512,23 @@ def _run_repl(agent: Agent):
             console.print(Panel(agent.jobs.summary(), title="Background jobs", border_style="magenta")); continue
         if low == "/todos":
             agent._print_todos(); continue
+        if low.startswith("/memory"):
+            args = user_input[7:].strip()
+            if not args:
+                t = Text()
+                for key in ("user", "agent"):
+                    t.append(f"[{key}]\n", style="bold cyan")
+                    t.append((agent.memory.stores[key].to_text() if agent.memory else "") or "(ว่าง)\n", style="dim")
+                console.print(Panel(t, title="ความจำระยะยาว (ข้าม session)", border_style="magenta")); continue
+            parts = args.split(" ", 2)
+            if len(parts) < 2 or parts[0].lower() not in ("add", "remove", "replace", "list"):
+                console.print(Text("ใช้: /memory add|remove|replace|list <user|agent> [ข้อความ]", style="yellow")); continue
+            act, target = parts[0].lower(), parts[1].lower()
+            content = parts[2] if len(parts) > 2 else ""
+            r = agent.memory_tool(act, target,
+                                  content=content,
+                                  old_text=content if act in ("remove", "replace") else "")
+            console.print(Text(r, style="green" if "ต้อง" not in r else "yellow")); continue
         if low == "/compact":
             console.print(Text(agent.compact(), style=C_OK)); continue
         if low == "/quiet on" or low == "/quiet":
