@@ -154,13 +154,31 @@ SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 CONTEXT_FILE = os.getenv("YOUSINI_CONTEXT", "YOUSINI.md")
 # โฟลเดอร์สกิล (relative ต่อ cwd)
 SKILLS_DIR = os.getenv("YOUSINI_SKILLS", "skills")
+# สกิลระดับเครื่อง (ติดตั้งผ่าน `yousini skill install`) — โหลดร่วมกับ ./skills ของโปรเจกต์
+def _profile_root() -> Path:
+    """รากของ data dir — รองรับโพรไฟล์ (YOUSINI_PROFILE env หรือ ~/.yousini/.active_profile)"""
+    base = Path.home() / ".yousini"
+    p = os.getenv("YOUSINI_PROFILE", "").strip()
+    active = p
+    if not active:
+        try:
+            f = base / ".active_profile"
+            if f.is_file():
+                active = f.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    if active and active not in ("", "default"):
+        return base / "profiles" / active
+    return base
+
+
+GLOBAL_SKILLS_DIR = Path(os.getenv("YOUSINI_GLOBAL_SKILLS", str(_profile_root() / "skills")))
 # โฟลเดอร์ hooks: ถ้าไม่ระบุ จะหา ./.yousini/hooks แล้ว ~/.yousini/hooks
 HOOKS_DIR = os.getenv("YOUSINI_HOOKS", "")
 # เปิด/ปิด auto-checkpoint (git commit ก่อนแก้ไฟล์)
 CHECKPOINT = os.getenv("YOUSINI_CHECKPOINT", "1") == "1"
 # ที่เก็บ session
-SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS",
-                              str(Path.home() / ".yousini" / "sessions")))
+SESSION_DIR = Path(os.getenv("YOUSINI_SESSIONS", str(_profile_root() / "sessions")))
 
 # Web search provider (ทางเลือกเสริม: ใช้ API key ของผู้ให้บริการค้นหาจริง แทน scraping)
 # ตั้ง YOUSINI_SEARCH_PROVIDER=brave|serpapi|tavily แล้วใส่ key ผ่านตัวแปรที่สอดคล้อง
@@ -173,7 +191,123 @@ if not API_KEY:
     console.print(Text("Error: ไม่พบ API Key โปรดคัดลอก .env.example เป็น .env แล้วใส่ YOUSINI_API_KEY", style="red"))
     sys.exit(1)
 
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+# ---- Provider Fallback Chain (Phase 5 — เทียบเท่า credential pool ของ Hermes) ----
+# ลำดับ: ตัวหลัก (env) → YOUSINI_FALLBACK_PROVIDERS (JSON) → config.json["providers"]
+# เมื่อเจอ auth/rate/network/5xx → สลับไป provider ถัดไปอัตโนมัติ
+
+
+def _load_providers():
+    """รายการ provider ทั้งหมด (base_url, api_key) เรียงตามลำดับการลอง"""
+    provs = [{"base_url": BASE_URL, "api_key": API_KEY}]
+    raw = os.getenv("YOUSINI_FALLBACK_PROVIDERS", "")
+    if raw:
+        try:
+            for p in json.loads(raw):
+                if isinstance(p, dict) and p.get("api_key") and p.get("base_url"):
+                    provs.append(p)
+        except Exception:
+            pass
+    cfg_file = globals().get("CONFIG_FILE")  # นิยามทีหลังบรรทัด 2082 — กัน NameError ตอน import
+    if cfg_file is not None:
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            prov_cfg = cfg.get("providers", [])
+            if isinstance(prov_cfg, dict):  # รูปแบบ login: {ชื่อ: {base_url, api_key, model}}
+                prov_cfg = [_fix_provider(p) for p in prov_cfg.values()]
+            for p in prov_cfg:
+                if isinstance(p, dict) and p.get("api_key") and p.get("base_url"):
+                    provs.append(p)
+        except Exception:
+            pass
+    # ตัดตัวซ้ำ (key+url เดียวกัน)
+    seen, out = set(), []
+    for p in provs:
+        k = (p["base_url"], p["api_key"])
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def _fix_provider(p: dict) -> dict:
+    """เติมค่าเริ่มต้นให้ provider จาก config.json (ฐาน URL ตามผู้ให้บริการ)"""
+    if p.get("base_url"):
+        return p
+    url_map = {"mistral": "https://api.mistral.ai/v1", "groq": "https://api.groq.com/openai/v1",
+               "openrouter": "https://openrouter.ai/api/v1", "deepseek": "https://api.deepseek.com/v1",
+               "openai": "https://api.openai.com/v1", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai"}
+    name = str(p.get("name", "")).lower()
+    for k, v in url_map.items():
+        if k in name:
+            p["base_url"] = v
+            break
+    return p
+
+
+def _retryable(e) -> bool:
+    """error ที่ควรลอง provider ถัดไป (auth/โค้ต้า/network/5xx)"""
+    from openai import (AuthenticationError, RateLimitError, APIConnectionError,
+                        InternalServerError, Timeout)
+    if isinstance(e, (AuthenticationError, RateLimitError, APIConnectionError,
+                      InternalServerError, Timeout)):
+        return True
+    try:
+        from openai import APIStatusError
+        if isinstance(e, APIStatusError) and e.status_code >= 500:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+class _Completions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, *a, **kw):
+        return self.owner._create(*a, **kw)
+
+
+class _Chat:
+    def __init__(self, owner):
+        self.completions = _Completions(owner)
+
+
+class _FallbackClient:
+    """proxy แทน OpenAI client — ลอง provider ตามลำดับ สลับอัตโนมัติเมื่อ error"""
+
+    def __init__(self, providers=None):
+        self.providers = providers if providers is not None else _load_providers()
+        self.current = 0
+        self.chat = _Chat(self)
+        self._client = self._build(0)
+
+    def _build(self, i):
+        p = self.providers[i]
+        return OpenAI(api_key=p["api_key"], base_url=p["base_url"])
+
+    def _create(self, *args, **kwargs):
+        attempts = 0
+        last_e = None
+        while True:
+            try:
+                return self._client.chat.completions.create(*args, **kwargs)
+            except Exception as e:
+                last_e = e
+                if not _retryable(e):
+                    raise
+                attempts += 1
+                if attempts >= len(self.providers):
+                    break
+                self.current = (self.current + 1) % len(self.providers)
+                self._client = self._build(self.current)
+                console.print(Text(
+                    f"⚠️ Provider #{self.current} ({self.providers[self.current]['base_url']}) "
+                    f"ล่ม: {e.__class__.__name__} → สลับอัตโนมัติ", style="yellow"))
+        raise last_e
+
+
+client = _FallbackClient()
 
 # คำสั่งอันตราย → ขออนุมัติเสมอ + เตือน
 DANGER_RE = [re.compile(p) for p in [
@@ -234,6 +368,10 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - list_jobs  แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
 - read_job   อ่านผลลัพธ์ของงาน background ตาม job id
 - load_skill โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) — เรียกเมื่องานเกี่ยวข้องกับสกิลนั้น
+- memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
+- skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
+- search_sessions ค้นหาย้อนหลังใน session ก่อนหน้า (เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้)
+- cron          จัดการงานอัตโนมัติตามเวลา (list/add/remove/pause/resume)
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
 - manage_todos จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า): action=add/update/complete/start/delete/list — ใช้แสดงแผนงานให้ผู้ใช้เห็นชัดเจนก่อนลงมือ
@@ -248,8 +386,10 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 7. เมื่อเห็นผลจากเครื่องมือแล้ว ให้นำไปใช้ต่อ ห้ามเรียก ask_user ถามผลที่ตนเห็นอยู่แล้ว
 8. เมื่องานเสร็จ ให้สรุปสั้นๆ เป็นภาษาไทย พร้อมบอกไฟล์/คำสั่งที่ทำไป
 9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้
-10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
-11. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
+10. เมื่อผู้ใช้บอกความชอบ/ข้อเท็จจริง/ข้อมูลเกี่ยวกับเครื่อง ให้บันทึกความจำระยะยาวด้วย memory(target=user|agent) ทันที — ห้ามบันทึกความคืบหน้างานชั่วคราว
+11. เมื่องานยากสำเร็จ (หลายขั้นตอน, แก้บั๊กที่ซับซ้อน, เจอทางลัด) ให้เสนอผู้ใช้ว่าจะบันทึกเป็น skill ไหม และใช้ skill_create ทันทีถ้าผู้ใช้ตกลง; ถ้าพบว่าสกิลล้าสมัย ให้ skill_patch แก้ไขทันที
+12. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
+13. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
 
 
 SUBAGENT_SYSTEM_PROMPT = """คุณคือ Yousini Sub-Agent — เอเจนต์ย่อยที่ทำงานแยกบริบทเพื่อทำงานเฉพาะส่วนหนึ่ง
@@ -315,39 +455,77 @@ def _skill_desc(text: str) -> str:
     return ""
 
 
+def _parse_skill(text: str, fallback_name: str):
+    """แยก frontmatter YAML แบบง่าย (name/description/version) ออกจากเนื้อหา
+    คืน (name, description, body) — ไม่มี frontmatter → ใช้ fallback_name + บรรทัดแรก"""
+    name, desc, body = fallback_name, "", text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            fm = text[3:end]
+            body = text[end + 4:].lstrip("\n")
+            for ln in fm.splitlines():
+                if ":" in ln:
+                    k, _, v = ln.partition(":")
+                    v = v.strip().strip('"').strip("'")
+                    if k.strip() == "name" and v:
+                        name = v
+                    elif k.strip() == "description" and v:
+                        desc = v
+    if not desc:
+        desc = _skill_desc(body)
+    return name, desc, body
+
+
 def load_skill_index(cwd: str, skills_dir: str = SKILLS_DIR):
-    """คืนรายการสกิลแบบย่อ (name, desc) โดยไม่โหลดเนื้อหาเต็ม — ป้องกัน context bloat เมื่อสกิลเยอะ"""
-    d = Path(cwd) / skills_dir
-    if not d.is_dir():
-        return []
+    """คืนรายการสกิลแบบย่อ (name, desc, source) จาก ./skills (📁โปรเจกต์) + ~/.yousini/skills (💾เครื่อง)
+    โดยไม่โหลดเนื้อหาเต็ม — ป้องกัน context bloat; สกิลโปรเจกต์ชนะสกิลเครื่องถ้าชื่อซ้ำ"""
+    seen = set()
     out = []
-    for f in sorted(d.glob("*.md")):
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+    for source, d in (("project", Path(cwd) / skills_dir), ("global", GLOBAL_SKILLS_DIR)):
+        if not d.is_dir():
             continue
-        out.append((f.stem, _skill_desc(text)))
+        for f in sorted(d.glob("*.md")):
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            name, desc, _ = _parse_skill(text, f.stem)
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append((name, desc, source))
     return out
 
 
 def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
-    d = Path(cwd) / skills_dir
-    p = d / f"{name}.md"
-    if not p.is_file():
-        avail = ", ".join(sorted(x.stem for x in d.glob("*.md"))) if d.is_dir() else ""
-        return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
-    try:
-        return p.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return f"Error: อ่านสกิลไม่ได้: {e}"
+    """โหลดเนื้อหาเต็มของสกิล — หาในโปรเจกต์ก่อน แล้วค่อยหาในเครื่อง"""
+    for d in (Path(cwd) / skills_dir, GLOBAL_SKILLS_DIR):
+        p = d / f"{name}.md"
+        if p.is_file():
+            try:
+                return p.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                return f"Error: อ่านสกิลไม่ได้: {e}"
+    avail = ", ".join(sorted(x.stem for x in (Path(cwd) / skills_dir).glob("*.md"))) if (Path(cwd) / skills_dir).is_dir() else ""
+    return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
 
 
-def build_system_prompt(context_text: str, skills) -> str:
+def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str:
     parts = [BASE_SYSTEM_PROMPT]
+    if memory_text.strip():
+        parts.append("=== ความจำระยะยาว (จำข้าม session) ===\n"
+                     "ข้อมูลด้านล่างคือความจำที่บันทึกไว้ — ใช้เป็นแนวทางเสมอ:\n"
+                     f"{memory_text}")
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
-        idx = "\n".join(f"- {n}: {d}" for n, d in skills)
+        rows = []
+        for item in skills:
+            n, d = item[0], item[1]
+            src = item[2] if len(item) > 2 else ""
+            rows.append(f"- {n}: {d}" + (" 📁" if src == "project" else " 💾" if src == "global" else ""))
+        idx = "\n".join(rows)
         parts.append(
             "=== Skills ที่มี (โหลดแบบเลือกสรร) ===\n"
             "รายชื่อสกิลพร้อมคำอธิบายสั้นๆ (เนื้อหาเต็มยังไม่ได้โหลดเข้ามา):\n"
@@ -481,7 +659,22 @@ class SessionStore:
         self._path(name).write_text(json.dumps(data, ensure_ascii=False),
                                     encoding="utf-8")
         self._touch_index(name)
+        # Phase 3: index ลง SQLite+FTS5 เพื่อค้นหาย้อนหลัง (/search, tool search_sessions)
+        try:
+            from yousini_sessions_db import SessionSearch
+            SessionSearch(self.base / "search.db").index_messages(
+                name, messages, data["saved_at"], meta)
+        except Exception:
+            pass
         return str(self._path(name))
+
+    def search(self, query: str, limit: int = 10):
+        """ค้นหาย้อนหลังในทุก session (FTS5 + LIKE fallback ภาษาไทย) — คืน list ของ dict"""
+        try:
+            from yousini_sessions_db import SessionSearch
+            return SessionSearch(self.base / "search.db").search(query, limit=limit)
+        except Exception:
+            return []
 
     def load(self, name: str):
         p = self._path(name)
@@ -625,8 +818,16 @@ class Agent:
         self.skills_dir = skills_dir
         self.context_text = load_context_text(self.cwd, self.context_file)
         self.skills = load_skill_index(self.cwd, self.skills_dir)
+        # ความจำระยะยาว (Phase 1 — เทียบเท่า Hermes memory)
+        try:
+            from yousini_memory import MemoryManager
+            self.memory = MemoryManager()
+        except Exception:
+            self.memory = None
         self.hooks = Hooks(hooks_dir, self.cwd)
-        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        self.system_prompt = build_system_prompt(
+            self.context_text, self.skills,
+            memory_text=self.memory.inject_text() if self.memory else "")
         self.messages = [{"role": "system", "content": self.system_prompt}]
         # สถิติโทเค็น (best-effort: อ่านจาก usage ของ API ถ้ามี)
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -637,10 +838,12 @@ class Agent:
         self.quiet_mode = False
 
     def refresh_context(self):
-        """โหลดบริบท/สกิลใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
+        """โหลดบริบท/สกิล/ความจำใหม่ (เรียกหลัง set_cwd หรือ /reload)"""
         self.context_text = load_context_text(self.cwd, self.context_file)
         self.skills = load_skill_index(self.cwd, self.skills_dir)
-        self.system_prompt = build_system_prompt(self.context_text, self.skills)
+        self.system_prompt = build_system_prompt(
+            self.context_text, self.skills,
+            memory_text=self.memory.inject_text() if self.memory else "")
         # แทนที่ system message แรก
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0]["content"] = self.system_prompt
@@ -1069,6 +1272,86 @@ class Agent:
     def load_skill(self, name: str) -> str:
         return load_skill_full(self.cwd, name, self.skills_dir)
 
+    def memory_tool(self, action: str, target: str, content: str = "", old_text: str = "") -> str:
+        """จัดการความจำระยะยาว (Phase 1 — เทียบเท่า Hermes memory)"""
+        if not self.memory:
+            return "memory ไม่พร้อมใช้งาน (ติดตั้ง yousini_memory.py ไม่สำเร็จ)"
+        return self.memory.act(action, target, content=content, old_text=old_text)
+
+    def _skill_target_dir(self) -> Path:
+        """ตำแหน่งสร้างสกิล: ./skills ของโปรเจกต์ถ้ามี dir อยู่แล้ว มิฉะนั้น ~/.yousini/skills"""
+        proj = Path(self.cwd) / self.skills_dir
+        return proj if proj.is_dir() else GLOBAL_SKILLS_DIR
+
+    def skill_create(self, name: str, description: str, content: str) -> str:
+        """สร้างสกิลใหม่ (มี frontmatter name/description) — ใช้เมื่อทำงานยากสำเร็จและควรจำวิธี"""
+        target_dir = self._skill_target_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        p = target_dir / f"{name}.md"
+        if p.exists():
+            return f"มีสกิล '{name}' อยู่แล้ว — ใช้ skill_patch เพื่อแก้ไข"
+        fm = f"---\nname: {name}\ndescription: {description}\n---\n"
+        p.write_text(fm + content.lstrip("\n"), encoding="utf-8")
+        self.refresh_context()
+        return f"สร้างสกิล '{name}' แล้ว: {p}"
+
+    def skill_patch(self, name: str, old_string: str, new_string: str) -> str:
+        """แก้เนื้อหาสกิล (search & replace)"""
+        for d in (Path(self.cwd) / self.skills_dir, GLOBAL_SKILLS_DIR):
+            p = d / f"{name}.md"
+            if p.is_file():
+                text = p.read_text(encoding="utf-8")
+                if old_string not in text:
+                    return f"ไม่พบ '{old_string}' ในสกิล '{name}'"
+                p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
+                self.refresh_context()
+                return f"แก้สกิล '{name}' แล้ว"
+        return f"ไม่พบสกิล '{name}'"
+
+    def cron_tool(self, action: str, schedule: str = "", prompt: str = "", job_id: int = None) -> str:
+        """จัดการงานอัตโนมัติตามเวลา (เทียบเท่า Hermes cronjob): list/add/remove/pause/resume"""
+        from yousini_cron import JobStore, parse_schedule
+        store = JobStore()
+        if action == "list":
+            rows = store.list()
+            if not rows:
+                return "ยังไม่มีงาน cron"
+            return "\n".join(
+                f"#{j['id']} {'▶' if j['enabled'] else '⏸'} {j['name']} [{j['schedule']}] "
+                f"รันล่าสุด {j['last_run'] or '—'} → {j['prompt'][:60]}" for j in rows)
+        if action == "add":
+            if parse_schedule(schedule)[0] == "invalid":
+                return f"schedule ไม่ถูกต้อง: {schedule} (ลอง 30m, 0 9 * * *, 2026-08-11T10:00:00)"
+            if not prompt:
+                return "ต้องใส่ prompt"
+            j = store.add(prompt[:30], schedule, prompt, cwd=self.cwd)
+            return f"เพิ่มงาน #{j['id']} '{j['name']}' แล้ว (ทุก {schedule})"
+        if action == "remove" and job_id:
+            if store.get(job_id):
+                store.remove(job_id)
+                return f"ลบงาน #{job_id} แล้ว"
+            return f"ไม่พบงาน #{job_id}"
+        if action in ("pause", "resume") and job_id:
+            j = store.set_enabled(job_id, action == "resume")
+            if j:
+                return f"งาน #{job_id} {'▶ resume แล้ว' if action == 'resume' else '⏸ pause แล้ว'}"
+            return f"ไม่พบงาน #{job_id}"
+        return "action ต้องเป็น list/add/remove/pause/resume (add ต้องมี schedule + prompt)"
+
+    def search_sessions(self, query: str, limit: int = 10) -> str:
+        """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
+        try:
+            from yousini_sessions_db import SessionSearch
+            rows = SessionSearch(SESSION_DIR / "search.db").search(query, limit=limit)
+        except Exception:
+            rows = []
+        if not rows:
+            return f"ไม่พบ session ที่เกี่ยวกับ '{query}'"
+        parts = [f"พบ {len(rows)} session ที่เกี่ยวข้อง:"]
+        for r in rows:
+            parts.append(f"• [{r['session']}] ({str(r['saved_at'])[:16]}) {r['role']}: {r['snippet']}")
+        return "\n".join(parts)
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1311,6 +1594,11 @@ TOOLS = [
     {"type": "function", "function": {"name": "manage_todos", "description": "จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) เพื่อแสดงแผนงานให้ผู้ใช้เห็นชัดเจน: action สามารถเป็น add/update/complete/start/delete/list — add ต้องการ content, complete/start/update/delete ต้องการ todo_id", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / update / complete / start / delete / list"}, "content": {"type": "string", "description": "ข้อความรายการ (สำหรับ add/update)"}, "todo_id": {"type": "integer", "description": "รหัสรายการ (สำหรับ update/complete/start/delete)"}, "status": {"type": "string", "description": "สถานะใหม่ (ไม่บังคับ)"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "batch_edit_files", "description": "แก้ไขหลายไฟล์พร้อมกัน + commit อะตอมิก เหมาะสำหรับ refactor ใหญ่ ใส่รายการ edits = [{path, old_string?, new_string?}]", "parameters": {"type": "object", "properties": {"edits": {"type": "array", "description": "รายการแก้ไฟล์ แต่ละอันมี path + new_string (เรียกใช้ old_string ถ้าต้องการ replace)", "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "new_string"]}}}, "required": ["edits"]}}},
     {"type": "function", "function": {"name": "run_test_loop", "description": "รัน test แล้วแก้ไขอัตโนมัติซ้ำ (auto-fix loop) — เหมาะกับ TDD workflow ใส่ test_cmd เช่น pytest -x", "parameters": {"type": "object", "properties": {"test_cmd": {"type": "string", "description": "คำสั่งรัน test (ค่าเริ่มต้น pytest)", "default": "pytest"}, "max_iterations": {"type": "integer", "description": "จำนวนรอบสูงสุด (ค่าเริ่มต้น 3)", "default": 3}}, "required": []}}},
+    {"type": "function", "function": {"name": "memory", "description": "จัดการความจำระยะยาว (จำข้าม session เหมือน Hermes memory): action add/remove/replace/list, target user (ข้อมูลผู้ใช้) หรือ agent (บันทึกของ agent) — บันทึกเฉพาะข้อเท็จจริง/ความชอบ/บทเรียนที่ควรจำข้าม session ห้ามบันทึกความคืบหน้างานชั่วคราว", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / remove / replace / list"}, "target": {"type": "string", "description": "user หรือ agent"}, "content": {"type": "string", "description": "ข้อความ (สำหรับ add/replace)"}, "old_text": {"type": "string", "description": "ข้อความค้นหาในรายการเดิม (สำหรับ remove/replace)"}}, "required": ["action", "target"]}}},
+    {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
+    {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "cron", "description": "จัดการงานอัตโนมัติตามเวลา (เหมือน Hermes cronjob): action=list/add/remove/pause/resume — add ต้องการ schedule (เช่น '30m', '0 9 * * *', '2026-08-11T10:00:00') + prompt", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "list / add / remove / pause / resume"}, "schedule": {"type": "string", "description": "ช่วงเวลา เช่น 30m, every 2h, 0 9 * * *, ISO"}, "prompt": {"type": "string", "description": "งานที่ให้ agent ทำเมื่อถึงเวลา"}, "job_id": {"type": "integer", "description": "id งาน (สำหรับ remove/pause/resume)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
 
 IMPL = {
@@ -1327,7 +1615,29 @@ IMPL = {
     "manage_todos": lambda a, k: k.manage_todos(**a),
     "batch_edit_files": lambda a, k: k.batch_edit_files(**a),
     "run_test_loop": lambda a, k: k.run_test_loop(**a),
+    "memory": lambda a, k: k.memory_tool(**a),
+    "skill_create": lambda a, k: k.skill_create(**a),
+    "skill_patch": lambda a, k: k.skill_patch(**a),
+    "search_sessions": lambda a, k: k.search_sessions(**a),
+    "cron": lambda a, k: k.cron_tool(**a),
 }
+
+# ---- MCP client (Phase 6): เครื่องมือจาก MCP server ภายนอก (ชื่อขึ้น mcp__<server>__<tool>) ----
+try:
+    from yousini_mcp import connect_all as _mcp_connect
+    _mcp_schemas, _mcp_impls = _mcp_connect()
+    if _mcp_schemas:
+        TOOLS = TOOLS + _mcp_schemas
+        IMPL.update(dict(_mcp_impls))
+except Exception as _mcp_err:
+    if str(_mcp_err):
+        pass  # ปิดเงียบ — ไม่ให้ MCP ที่พังทำลายการเริ่มต้น
+
+# ปกติ schema tools: Mistral/provider บางราย ไม่ยอมรับ "required": [] (ว่าง) → ลบออก
+for _t in TOOLS:
+    _fn = _t.get("function", {})
+    if _fn.get("required") == []:
+        _fn.pop("required", None)
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
 _TOOL_FIX_HINT = (
@@ -1735,8 +2045,12 @@ def _print_help():
         ("/save [ชื่อ]", "บันทึกบทสนทนาลงดิสก์"),
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
+        ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
+        ("/cron", "ดู/จัดการงานอัตโนมัติ: add <schedule> <prompt> | remove <id> | pause|resume <id>"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
+        ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
+        ("/providers", "แสดง provider ที่ใช้ + ลำดับสำรอง (fallback อัตโนมัติ)"),
         ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
@@ -1750,6 +2064,8 @@ def _print_help():
         ("yousini connect <url> [--token รหัส]", "คุยกับ Yousini อีกเครื่องผ่านเน็ต"),
         ("yousini mcp [--allow-exec]", "เปิดเป็น MCP server (stdio)"),
         ("yousini resume", "โหลด session ล่าสุดแล้วเข้าสู่แชท"),
+        ("yousini cron [--interval 60|--once]", "รันงาน cron ตามเวลา (daemon / รอบเดียว)"),
+        ("yousini mcp-add <ชื่อ> <คำสั่ง>", "เพิ่ม MCP server (client) — เครื่องมือขึ้น mcp__<ชื่อ>__<tool>"),
     ]
     t = Text()
     t.append("  คำสั่งใน REPL\n", style="bold magenta")
@@ -1787,10 +2103,12 @@ def _print_skills(agent: Agent):
         console.print(Text("ไม่มีสกิล (โฟลเดอร์ skills/ ว่างหรือไม่มี)", style="yellow"))
         return
     t = Text()
-    for n, c in agent.skills:
-        t.append(f"• {n}", style="bold cyan")
-        t.append(f"  ({len(c)} ตัวอักษร)\n", style="dim")
-    console.print(Panel(t, title=f"สกิลที่โหลด ({len(agent.skills)})", border_style="magenta"))
+    for item in agent.skills:
+        n = item[0]
+        src = item[2] if len(item) > 2 else ""
+        tag = " 📁" if src == "project" else " 💾" if src == "global" else ""
+        t.append(f"• {n}{tag}\n", style="bold cyan")
+    console.print(Panel(t, title=f"สกิลที่โหลด ({len(agent.skills)}) — 📁โปรเจกต์ 💾เครื่อง", border_style="magenta"))
 
 
 def _print_hooks(agent: Agent):
@@ -1815,7 +2133,7 @@ def _print_hooks(agent: Agent):
 # ============================================================
 # CONFIGURATION & THEMES
 # ============================================================
-CONFIG_DIR = Path.home() / ".yousini"
+CONFIG_DIR = _profile_root()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 THEMES = {
@@ -1868,7 +2186,7 @@ def _apply_provider_config(cfg: dict) -> bool:
             os.environ["YOUSINI_MODEL"] = p["model"]
             MODEL = p["model"]; activated = True
     if activated:
-        client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+        client = _FallbackClient()  # rebuild ทั้ง chain (ตัวหลัก = provider ที่เพิ่ง activate)
     return activated
 
 
@@ -2191,6 +2509,22 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/api/webhook/"):
+                name = path[len("/api/webhook/"):].strip("/")
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    payload = json.loads(self.rfile.read(length) or "{}")
+                except Exception:
+                    payload = {}
+                from yousini_webhook import run_webhook
+                ok, out = run_webhook(name, payload)
+                return self._send(200 if ok else 404,
+                                  json.dumps({"ok": ok, "name": name, "result": str(out)[:2000]},
+                                             ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             if path != "/api/chat":
                 return self._send(404, "not found")
             if not self._auth_ok():
@@ -2458,6 +2792,77 @@ def _default_session_name(cwd: str) -> str:
     return f"cli-{os.path.basename(os.path.abspath(cwd))}-{h % 100000}"
 
 
+def _providers_cmd():
+    """แสดง provider chain + ตัวที่กำลังใช้"""
+    provs = _load_providers()
+    if not provs:
+        console.print(Text("ไม่มี provider กำหนด (ใส่ YOUSINI_API_KEY ใน .env)", style="yellow"))
+        return
+    t = Text()
+    for i, p in enumerate(provs):
+        mark = "▶" if i == client.current else " "
+        host = str(p["base_url"]).replace("https://", "").replace("/v1", "").rstrip("/")
+        key = str(p["api_key"])
+        t.append(f"{mark} #{i + 1} {host}  ", style="bold cyan" if i == client.current else "dim")
+        t.append(f"key={key[:6]}…{key[-3:]}\n", style="dim")
+    console.print(Panel(t, title="Provider chain (fallback อัตโนมัติเมื่อโค้ต้าหมด)", border_style="magenta"))
+
+
+def _cron_cmd(agent, args=""):
+    """จัดการงาน cron จาก REPL (/cron list|add|remove|pause|resume)"""
+    from yousini_cron import JobStore, parse_schedule
+    store = JobStore()
+    parts = args.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    if not sub:
+        rows = store.list()
+        if not rows:
+            console.print(Text("ยังไม่มีงาน cron — ใช้ /cron add <schedule> <prompt> เช่น /cron add 30m สรุปงานวันนี้", style="yellow"))
+            return
+        t = Text()
+        for j in rows:
+            st = "▶" if j["enabled"] else "⏸"
+            t.append(f"{st} #{j['id']} {j['name']} ", style="bold cyan")
+            t.append(f"[{j['schedule']}]  รันล่าสุด: {j['last_run'] or '—'}\n", style="dim")
+            t.append(f"   {j['prompt'][:80]}\n", style="white")
+        console.print(Panel(t, title=f"Cron jobs ({len(rows)})", border_style="magenta"))
+        return
+    if sub == "add" and len(parts) > 1:
+        sch, _, prompt = parts[1].partition(" ")
+        if not prompt:
+            console.print(Text("ใช้: /cron add <schedule> <prompt> เช่น /cron add 0 9 * * * สรุปข่าวเช้า", style="yellow"))
+            return
+        if parse_schedule(sch)[0] == "invalid":
+            console.print(Text(f"schedule '{sch}' ไม่ถูกต้อง (ลอง 30m, 0 9 * * *, 2026-08-11T10:00:00)", style="red"))
+            return
+        j = store.add(prompt[:30], sch, prompt, cwd=agent.cwd)
+        console.print(Text(f"เพิ่มงาน #{j['id']} '{j['name']}' แล้ว (ทุก {sch})", style="green"))
+        return
+    if sub == "remove" and len(parts) > 1:
+        try:
+            jid = int(parts[1])
+        except ValueError:
+            console.print(Text("ใส่ id ตัวเลข", style="red")); return
+        if store.get(jid):
+            store.remove(jid)
+            console.print(Text(f"ลบงาน #{jid} แล้ว", style="yellow"))
+        else:
+            console.print(Text(f"ไม่พบงาน #{jid}", style="red"))
+        return
+    if sub in ("pause", "resume") and len(parts) > 1:
+        try:
+            jid = int(parts[1])
+        except ValueError:
+            console.print(Text("ใส่ id ตัวเลข", style="red")); return
+        j = store.set_enabled(jid, sub == "resume")
+        if j:
+            console.print(Text(f"งาน #{jid} {'▶ resume แล้ว' if sub == 'resume' else '⏸ pause แล้ว'}", style="green"))
+        else:
+            console.print(Text(f"ไม่พบงาน #{jid}", style="red"))
+        return
+    console.print(Text("ใช้: /cron | /cron add <schedule> <prompt> | /cron remove <id> | /cron pause|resume <id>", style="yellow"))
+
+
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
@@ -2489,6 +2894,25 @@ def _run_repl(agent: Agent):
             console.print(Panel(agent.jobs.summary(), title="Background jobs", border_style="magenta")); continue
         if low == "/todos":
             agent._print_todos(); continue
+        if low == "/providers":
+            _providers_cmd(); continue
+        if low.startswith("/memory"):
+            args = user_input[7:].strip()
+            if not args:
+                t = Text()
+                for key in ("user", "agent"):
+                    t.append(f"[{key}]\n", style="bold cyan")
+                    t.append((agent.memory.stores[key].to_text() if agent.memory else "") or "(ว่าง)\n", style="dim")
+                console.print(Panel(t, title="ความจำระยะยาว (ข้าม session)", border_style="magenta")); continue
+            parts = args.split(" ", 2)
+            if len(parts) < 2 or parts[0].lower() not in ("add", "remove", "replace", "list"):
+                console.print(Text("ใช้: /memory add|remove|replace|list <user|agent> [ข้อความ]", style="yellow")); continue
+            act, target = parts[0].lower(), parts[1].lower()
+            content = parts[2] if len(parts) > 2 else ""
+            r = agent.memory_tool(act, target,
+                                  content=content,
+                                  old_text=content if act in ("remove", "replace") else "")
+            console.print(Text(r, style="green" if "ต้อง" not in r else "yellow")); continue
         if low == "/compact":
             console.print(Text(agent.compact(), style=C_OK)); continue
         if low == "/quiet on" or low == "/quiet":
@@ -2523,6 +2947,20 @@ def _run_repl(agent: Agent):
                 t.append(f"• {s['name']}", style="bold cyan")
                 t.append(f"   ({s['turns']} ข้อความ, {s['saved_at']})\n", style="dim")
             console.print(Panel(t, title="Sessions ที่บันทึก", border_style="magenta")); continue
+        if low.startswith("/search"):
+            q = user_input[7:].strip()
+            if not q:
+                console.print(Text("ใช้: /search <คำค้น>", style="yellow")); continue
+            rows = store.search(q)
+            if not rows:
+                console.print(Text(f"ไม่พบ session เกี่ยวกับ '{q}'", style="yellow")); continue
+            t = Text()
+            for r in rows:
+                t.append(f"• [{r['session']}] ", style="bold cyan")
+                t.append(f"({r['saved_at'][:16]}) ", style="dim")
+                t.append(f"{r['role']}: {r['snippet']}\n",
+                         style="green" if r["role"] == "assistant" else "white")
+            console.print(Panel(t, title=f"ผลค้นหา '{q}'", border_style="magenta")); continue
         if low.startswith("/save"):
             name = user_input[5:].strip() or _default_session_name(agent.cwd)
             p = store.save(name, agent.messages, {"model": agent.model, "cwd": agent.cwd})
@@ -2560,7 +2998,15 @@ def _run_repl(agent: Agent):
         if low == "/plan":
             plan_mode()
             continue
+        if low == "/cron" or low.startswith("/cron "):
+            _cron_cmd(agent, user_input[5:].strip()); continue
         chat_turn(agent, user_input)
+        # Phase 3: auto-save session ทุก turn เพื่อให้ค้นหาย้อนหลังได้
+        try:
+            store.save(_default_session_name(agent.cwd), agent.messages,
+                       {"model": agent.model, "cwd": agent.cwd})
+        except Exception:
+            pass
 
 
 def _rollback_to_last_checkpoint(agent: Agent) -> str:
@@ -2596,6 +3042,45 @@ def resume_main():
             agent.model = d["meta"]["model"]
         console.print(Text(f"โหลด session ล่าสุด '{name}' ({len(agent.messages)} ข้อความ)", style="green"))
     _run_repl(agent)
+
+
+def cron_main(interval=60, once=False):
+    """รันงาน cron ที่ถึงเวลา — loop (daemon) หรือ --once รอบเดียว"""
+    from yousini_cron import JobStore, run_due_jobs
+
+    def run_fn(job):
+        agent = Agent(interactive=False, cwd=job.get("cwd") or os.getcwd())
+        chat_turn(agent, job["prompt"])
+        out = agent.messages[-1].get("content", "") if agent.messages else ""
+        try:
+            SessionStore(SESSION_DIR).save(f"cron-{job['name']}", agent.messages,
+                                           {"model": agent.model, "cwd": agent.cwd, "cron": True})
+        except Exception:
+            pass
+        return out
+
+    store = JobStore()
+    if once:
+        for r in run_due_jobs(store, run_fn):
+            tag = f"[{r['job']}]"
+            if r["error"]:
+                console.print(Text(f"{tag} ❌ {r['error']}", style="red"))
+            else:
+                console.print(Text(f"{tag} ✅ ({len(r['output'] or '')} ตัวอักษร)", style="green"))
+        return
+    console.print(Text(f"Cron daemon เริ่มแล้ว (ตรวจทุก {interval}s) — Ctrl+C เพื่อหยุด", style="cyan"))
+    while True:
+        try:
+            for r in run_due_jobs(store, run_fn):
+                tag = f"[{r['job']}]"
+                if r["error"]:
+                    console.print(Text(f"{tag} ❌ {r['error']}", style="red"))
+                else:
+                    console.print(Text(f"{tag} ✅ สรุปสั้น: {str(r['output'])[:120]}", style="green"))
+        except KeyboardInterrupt:
+            console.print(Text("\nหยุด cron daemon", style="dim"))
+            break
+        time.sleep(interval)
 
 
 def main():
@@ -2659,6 +3144,129 @@ def main():
         subcmd = o.get("_", [])[0] if o.get("_") else ""
         perm_args = " ".join(o.get("_", [])[1:]) if len(o.get("_", [])) > 1 else ""
         permission_cmd(subcmd + " " + perm_args)  # CLI permission command
+        return
+
+    # ---- subcommand: webhook-add / webhook-rm / webhook-list ----
+    if argv and argv[0] in ("webhook-add", "webhook-rm", "webhook-list"):
+        from yousini_webhook import WebhookStore
+        ws = WebhookStore()
+        if argv[0] == "webhook-list":
+            hooks = ws.load()
+            if not hooks:
+                console.print(Text("ยังไม่มี webhook — ใช้ yousini webhook-add <ชื่อ> <prompt>", style="yellow"))
+            else:
+                t = Text()
+                for h in hooks:
+                    t.append(f"• {h['name']}: {str(h['prompt'])[:70]}\n", style="cyan")
+                console.print(Panel(t, title="Webhooks", border_style="magenta"))
+            return
+        if argv[0] == "webhook-add":
+            rest = argv[1:]
+            if len(rest) < 2:
+                console.print(Text("ใช้: yousini webhook-add <ชื่อ> <prompt> [--cwd <dir>] [--callback <url>]", style="red"))
+                return
+            name = rest[0].lstrip("/")
+            prompt = rest[1]
+            cwd, cb = None, ""
+            if "--cwd" in rest:
+                i = rest.index("--cwd")
+                if i + 1 < len(rest):
+                    cwd = rest[i + 1]
+            if "--callback" in rest:
+                i = rest.index("--callback")
+                if i + 1 < len(rest):
+                    cb = rest[i + 1]
+            ws.add(name, prompt, cwd=cwd, callback_url=cb)
+            console.print(Text(f"เพิ่ม webhook '/{name}' แล้ว (POST /api/webhook/{name} ใน serve)", style="green"))
+            return
+        if argv[0] == "webhook-rm" and len(argv) > 1:
+            ws.remove(argv[1].lstrip("/"))
+            console.print(Text(f"ลบ webhook '{argv[1].lstrip('/')}' แล้ว", style="yellow"))
+            return
+
+    # ---- subcommand: telegram (gateway) ----
+    if argv and argv[0] == "telegram":
+        o = _parse_flags(argv[1:])
+        token = o.get("token") or os.getenv("YOUSINI_TG_TOKEN", "")
+        chat = o.get("chat") or os.getenv("YOUSINI_TG_CHAT_ID", "")
+        if not token:
+            console.print(Text("ต้องมี token — ตั้ง YOUSINI_TG_TOKEN หรือ --token <bot token> (จาก BotFather)", style="red"))
+            return
+        from yousini_telegram import TelegramBot
+
+        def reply_fn(text, cid):
+            agent = Agent(interactive=False)
+            chat_turn(agent, text)
+            return agent.messages[-1].get("content", "") if agent.messages else ""
+
+        bot = TelegramBot(token, chat_id=chat)
+        console.print(Text("Telegram gateway เริ่มแล้ว — รอข้อความ (Ctrl+C เพื่อหยุด)", style="cyan"))
+        bot.run_forever(reply_fn)
+        return
+
+    # ---- subcommand: profile ----
+    if argv and argv[0] == "profile":
+        if len(argv) > 1:
+            name = argv[1] if argv[1] != "default" else ""
+            act = Path.home() / ".yousini" / ".active_profile"
+            if name:
+                act.write_text(name, encoding="utf-8")
+                console.print(Text(f"สลับโพรไฟล์เป็น '{name}' แล้ว — รีสตาร์ทเพื่อเริ่มใช้ (data อยู่ ~/.yousini/profiles/{name}/)", style="green"))
+            else:
+                act.unlink(missing_ok=True)
+                console.print(Text("กลับสู่โพรไฟล์ default แล้ว", style="yellow"))
+        else:
+            print("โพรไฟล์ปัจจุบัน:", _profile_root())
+        return
+
+    # ---- subcommand: mcp-add / mcp-list / mcp-rm (MCP client config) ----
+    if argv and argv[0] in ("mcp-add", "mcp-list", "mcp-rm"):
+        from yousini_mcp import MCP_FILE, load_mcp_config
+        if argv[0] == "mcp-list":
+            cfg = load_mcp_config()
+            if not cfg:
+                console.print(Text("ยังไม่มี MCP server ตั้งค่า — ใช้ yousini mcp-add <ชื่อ> <คำสั่ง>", style="yellow"))
+            else:
+                t = Text()
+                for n, c in cfg.items():
+                    t.append(f"• {n}: {c}\n", style="cyan")
+                console.print(Panel(t, title="MCP servers (client)", border_style="magenta"))
+            return
+        if argv[0] == "mcp-add":
+            rest = argv[1:]
+            if len(rest) < 2:
+                console.print(Text("ใช้: yousini mcp-add <ชื่อ> <คำสั่งรัน server> เช่น yousini mcp-add wiki python wiki_mcp.py", style="red"))
+                return
+            name, cmd = rest[0], " ".join(rest[1:])
+            try:
+                cfg = json.loads(MCP_FILE.read_text(encoding="utf-8")) if MCP_FILE.is_file() else []
+            except Exception:
+                cfg = []
+            cfg = [s for s in cfg if not (isinstance(s, dict) and s.get("name") == name)]
+            cfg.append({"name": name, "cmd": cmd})
+            MCP_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MCP_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+            console.print(Text(f"เพิ่ม MCP server '{name}' แล้ว ({cmd}) — รีสตาร์ท yousini เพื่อโหลดเครื่องมือ", style="green"))
+            return
+        if argv[0] == "mcp-rm":
+            if len(argv) < 2:
+                console.print(Text("ใช้: yousini mcp-rm <ชื่อ>", style="red"))
+                return
+            name = argv[1]
+            try:
+                cfg = json.loads(MCP_FILE.read_text(encoding="utf-8")) if MCP_FILE.is_file() else []
+            except Exception:
+                cfg = []
+            new_cfg = [s for s in cfg if not (isinstance(s, dict) and s.get("name") == name)]
+            MCP_FILE.write_text(json.dumps(new_cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+            console.print(Text(f"ลบ MCP server '{name}' แล้ว", style="yellow"))
+            return
+
+    # ---- subcommand: cron (งานอัตโนมัติตามเวลา) ----
+    if argv and argv[0] == "cron":
+        o = _parse_flags(argv[1:])
+        cron_main(interval=int(o.get("interval", 60)) if str(o.get("interval", "60")).isdigit() else 60,
+                  once=bool(o.get("once")))
         return
 
     # ---- subcommand: resume ----
