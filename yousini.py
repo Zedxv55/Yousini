@@ -1606,6 +1606,17 @@ IMPL = {
     "cron": lambda a, k: k.cron_tool(**a),
 }
 
+# ---- MCP client (Phase 6): เครื่องมือจาก MCP server ภายนอก (ชื่อขึ้น mcp__<server>__<tool>) ----
+try:
+    from yousini_mcp import connect_all as _mcp_connect
+    _mcp_schemas, _mcp_impls = _mcp_connect()
+    if _mcp_schemas:
+        TOOLS = TOOLS + _mcp_schemas
+        IMPL.update(dict(_mcp_impls))
+except Exception as _mcp_err:
+    if str(_mcp_err):
+        pass  # ปิดเงียบ — ไม่ให้ MCP ที่พังทำลายการเริ่มต้น
+
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
 _TOOL_FIX_HINT = (
     "ข้อผิดพลาด: คุณพยายามเรียกใช้เครื่องมือที่ไม่มีในระบบ (เช่น repo_browser, python, "
@@ -2032,6 +2043,7 @@ def _print_help():
         ("yousini mcp [--allow-exec]", "เปิดเป็น MCP server (stdio)"),
         ("yousini resume", "โหลด session ล่าสุดแล้วเข้าสู่แชท"),
         ("yousini cron [--interval 60|--once]", "รันงาน cron ตามเวลา (daemon / รอบเดียว)"),
+        ("yousini mcp-add <ชื่อ> <คำสั่ง>", "เพิ่ม MCP server (client) — เครื่องมือขึ้น mcp__<ชื่อ>__<tool>"),
     ]
     t = Text()
     t.append("  คำสั่งใน REPL\n", style="bold magenta")
@@ -3095,6 +3107,49 @@ def main():
         perm_args = " ".join(o.get("_", [])[1:]) if len(o.get("_", [])) > 1 else ""
         permission_cmd(subcmd + " " + perm_args)  # CLI permission command
         return
+
+    # ---- subcommand: mcp-add / mcp-list / mcp-rm (MCP client config) ----
+    if argv and argv[0] in ("mcp-add", "mcp-list", "mcp-rm"):
+        from yousini_mcp import MCP_FILE, load_mcp_config
+        if argv[0] == "mcp-list":
+            cfg = load_mcp_config()
+            if not cfg:
+                console.print(Text("ยังไม่มี MCP server ตั้งค่า — ใช้ yousini mcp-add <ชื่อ> <คำสั่ง>", style="yellow"))
+            else:
+                t = Text()
+                for n, c in cfg.items():
+                    t.append(f"• {n}: {c}\n", style="cyan")
+                console.print(Panel(t, title="MCP servers (client)", border_style="magenta"))
+            return
+        if argv[0] == "mcp-add":
+            rest = argv[1:]
+            if len(rest) < 2:
+                console.print(Text("ใช้: yousini mcp-add <ชื่อ> <คำสั่งรัน server> เช่น yousini mcp-add wiki python wiki_mcp.py", style="red"))
+                return
+            name, cmd = rest[0], " ".join(rest[1:])
+            try:
+                cfg = json.loads(MCP_FILE.read_text(encoding="utf-8")) if MCP_FILE.is_file() else []
+            except Exception:
+                cfg = []
+            cfg = [s for s in cfg if not (isinstance(s, dict) and s.get("name") == name)]
+            cfg.append({"name": name, "cmd": cmd})
+            MCP_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MCP_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+            console.print(Text(f"เพิ่ม MCP server '{name}' แล้ว ({cmd}) — รีสตาร์ท yousini เพื่อโหลดเครื่องมือ", style="green"))
+            return
+        if argv[0] == "mcp-rm":
+            if len(argv) < 2:
+                console.print(Text("ใช้: yousini mcp-rm <ชื่อ>", style="red"))
+                return
+            name = argv[1]
+            try:
+                cfg = json.loads(MCP_FILE.read_text(encoding="utf-8")) if MCP_FILE.is_file() else []
+            except Exception:
+                cfg = []
+            new_cfg = [s for s in cfg if not (isinstance(s, dict) and s.get("name") == name)]
+            MCP_FILE.write_text(json.dumps(new_cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+            console.print(Text(f"ลบ MCP server '{name}' แล้ว", style="yellow"))
+            return
 
     # ---- subcommand: cron (งานอัตโนมัติตามเวลา) ----
     if argv and argv[0] == "cron":
