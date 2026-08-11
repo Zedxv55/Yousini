@@ -238,6 +238,7 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - load_skill โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) — เรียกเมื่องานเกี่ยวข้องกับสกิลนั้น
 - memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
 - skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
+- search_sessions ค้นหาย้อนหลังใน session ก่อนหน้า (เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้)
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
 - manage_todos จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า): action=add/update/complete/start/delete/list — ใช้แสดงแผนงานให้ผู้ใช้เห็นชัดเจนก่อนลงมือ
@@ -525,7 +526,22 @@ class SessionStore:
         self._path(name).write_text(json.dumps(data, ensure_ascii=False),
                                     encoding="utf-8")
         self._touch_index(name)
+        # Phase 3: index ลง SQLite+FTS5 เพื่อค้นหาย้อนหลัง (/search, tool search_sessions)
+        try:
+            from yousini_sessions_db import SessionSearch
+            SessionSearch(self.base / "search.db").index_messages(
+                name, messages, data["saved_at"], meta)
+        except Exception:
+            pass
         return str(self._path(name))
+
+    def search(self, query: str, limit: int = 10):
+        """ค้นหาย้อนหลังในทุก session (FTS5 + LIKE fallback ภาษาไทย) — คืน list ของ dict"""
+        try:
+            from yousini_sessions_db import SessionSearch
+            return SessionSearch(self.base / "search.db").search(query, limit=limit)
+        except Exception:
+            return []
 
     def load(self, name: str):
         p = self._path(name)
@@ -1159,6 +1175,20 @@ class Agent:
                 return f"แก้สกิล '{name}' แล้ว"
         return f"ไม่พบสกิล '{name}'"
 
+    def search_sessions(self, query: str, limit: int = 10) -> str:
+        """ค้นหาย้อนหลังใน session ก่อนหน้า (เทียบเท่า Hermes session_search)"""
+        try:
+            from yousini_sessions_db import SessionSearch
+            rows = SessionSearch(SESSION_DIR / "search.db").search(query, limit=limit)
+        except Exception:
+            rows = []
+        if not rows:
+            return f"ไม่พบ session ที่เกี่ยวกับ '{query}'"
+        parts = [f"พบ {len(rows)} session ที่เกี่ยวข้อง:"]
+        for r in rows:
+            parts.append(f"• [{r['session']}] ({str(r['saved_at'])[:16]}) {r['role']}: {r['snippet']}")
+        return "\n".join(parts)
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1404,6 +1434,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "memory", "description": "จัดการความจำระยะยาว (จำข้าม session เหมือน Hermes memory): action add/remove/replace/list, target user (ข้อมูลผู้ใช้) หรือ agent (บันทึกของ agent) — บันทึกเฉพาะข้อเท็จจริง/ความชอบ/บทเรียนที่ควรจำข้าม session ห้ามบันทึกความคืบหน้างานชั่วคราว", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / remove / replace / list"}, "target": {"type": "string", "description": "user หรือ agent"}, "content": {"type": "string", "description": "ข้อความ (สำหรับ add/replace)"}, "old_text": {"type": "string", "description": "ข้อความค้นหาในรายการเดิม (สำหรับ remove/replace)"}}, "required": ["action", "target"]}}},
     {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
     {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
 ]
 
 IMPL = {
@@ -1423,6 +1454,7 @@ IMPL = {
     "memory": lambda a, k: k.memory_tool(**a),
     "skill_create": lambda a, k: k.skill_create(**a),
     "skill_patch": lambda a, k: k.skill_patch(**a),
+    "search_sessions": lambda a, k: k.search_sessions(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1831,6 +1863,7 @@ def _print_help():
         ("/save [ชื่อ]", "บันทึกบทสนทนาลงดิสก์"),
         ("/load [ชื่อ]", "โหลดบทสนทนาจากดิสก์"),
         ("/sessions", "แสดงรายการ session ที่บันทึกไว้"),
+        ("/search <คำ>", "ค้นหาย้อนหลังในทุก session (รองรับภาษาไทย)"),
         ("/jobs", "แสดงงาน shell background"),
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
         ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
@@ -2639,6 +2672,20 @@ def _run_repl(agent: Agent):
                 t.append(f"• {s['name']}", style="bold cyan")
                 t.append(f"   ({s['turns']} ข้อความ, {s['saved_at']})\n", style="dim")
             console.print(Panel(t, title="Sessions ที่บันทึก", border_style="magenta")); continue
+        if low.startswith("/search"):
+            q = user_input[7:].strip()
+            if not q:
+                console.print(Text("ใช้: /search <คำค้น>", style="yellow")); continue
+            rows = store.search(q)
+            if not rows:
+                console.print(Text(f"ไม่พบ session เกี่ยวกับ '{q}'", style="yellow")); continue
+            t = Text()
+            for r in rows:
+                t.append(f"• [{r['session']}] ", style="bold cyan")
+                t.append(f"({r['saved_at'][:16]}) ", style="dim")
+                t.append(f"{r['role']}: {r['snippet']}\n",
+                         style="green" if r["role"] == "assistant" else "white")
+            console.print(Panel(t, title=f"ผลค้นหา '{q}'", border_style="magenta")); continue
         if low.startswith("/save"):
             name = user_input[5:].strip() or _default_session_name(agent.cwd)
             p = store.save(name, agent.messages, {"model": agent.model, "cwd": agent.cwd})
@@ -2677,6 +2724,12 @@ def _run_repl(agent: Agent):
             plan_mode()
             continue
         chat_turn(agent, user_input)
+        # Phase 3: auto-save session ทุก turn เพื่อให้ค้นหาย้อนหลังได้
+        try:
+            store.save(_default_session_name(agent.cwd), agent.messages,
+                       {"model": agent.model, "cwd": agent.cwd})
+        except Exception:
+            pass
 
 
 def _rollback_to_last_checkpoint(agent: Agent) -> str:
