@@ -154,6 +154,8 @@ SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 CONTEXT_FILE = os.getenv("YOUSINI_CONTEXT", "YOUSINI.md")
 # โฟลเดอร์สกิล (relative ต่อ cwd)
 SKILLS_DIR = os.getenv("YOUSINI_SKILLS", "skills")
+# สกิลระดับเครื่อง (ติดตั้งผ่าน `yousini skill install`) — โหลดร่วมกับ ./skills ของโปรเจกต์
+GLOBAL_SKILLS_DIR = Path(os.getenv("YOUSINI_GLOBAL_SKILLS", str(Path.home() / ".yousini" / "skills")))
 # โฟลเดอร์ hooks: ถ้าไม่ระบุ จะหา ./.yousini/hooks แล้ว ~/.yousini/hooks
 HOOKS_DIR = os.getenv("YOUSINI_HOOKS", "")
 # เปิด/ปิด auto-checkpoint (git commit ก่อนแก้ไฟล์)
@@ -234,6 +236,8 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 - list_jobs  แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
 - read_job   อ่านผลลัพธ์ของงาน background ตาม job id
 - load_skill โหลดเนื้อหาเต็มของสกิลตามชื่อ (จากรายการ Skills ที่โหลดแบบเลือกสรร) — เรียกเมื่องานเกี่ยวข้องกับสกิลนั้น
+- memory     จัดการความจำระยะยาว (จำข้าม session): action=add/remove/replace/list, target=user/agent — บันทึกความชอบ/ข้อเท็จจริง/บทเรียนที่ควรจำ
+- skill_create / skill_patch สร้าง/แก้ไขสกิล (ความรู้/ขั้นตอนที่ใช้ซ้ำ) — หลังจากทำงานยากสำเร็จ
 - run_python รันโค้ด Python บนเครื่อง (คำนวณ, ประมวลผลข้อมูล, ทดสอบ snippet) คืน stdout/stderr
 - spawn_subagent รันเอเจนต์ย่อยแยกบริบทเพื่อทำงานเฉพาะส่วน (วิเคราะห์/ค้นหา/สรุป) คืนสรุปสั้นๆ ไม่ทำให้บริบทหลักบวม
 - manage_todos จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า): action=add/update/complete/start/delete/list — ใช้แสดงแผนงานให้ผู้ใช้เห็นชัดเจนก่อนลงมือ
@@ -248,8 +252,10 @@ BASE_SYSTEM_PROMPT = """คุณคือ Yousini — Local Coding Agent ที
 7. เมื่อเห็นผลจากเครื่องมือแล้ว ให้นำไปใช้ต่อ ห้ามเรียก ask_user ถามผลที่ตนเห็นอยู่แล้ว
 8. เมื่องานเสร็จ ให้สรุปสั้นๆ เป็นภาษาไทย พร้อมบอกไฟล์/คำสั่งที่ทำไป
 9. ทำงานแบบอัตโนมัติให้ได้มากที่สุด อย่าถามผู้ใช้ยืนยันผลที่ตรวจสอบเองได้
-10. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
-11. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
+10. เมื่อผู้ใช้บอกความชอบ/ข้อเท็จจริง/ข้อมูลเกี่ยวกับเครื่อง ให้บันทึกความจำระยะยาวด้วย memory(target=user|agent) ทันที — ห้ามบันทึกความคืบหน้างานชั่วคราว
+11. เมื่องานยากสำเร็จ (หลายขั้นตอน, แก้บั๊กที่ซับซ้อน, เจอทางลัด) ให้เสนอผู้ใช้ว่าจะบันทึกเป็น skill ไหม และใช้ skill_create ทันทีถ้าผู้ใช้ตกลง; ถ้าพบว่าสกิลล้าสมัย ให้ skill_patch แก้ไขทันที
+12. หากรัน shell ที่ใช้เวลานาน ให้ใช้ run_in_background=true แล้ว poll ผลด้วย read_job แทนการรอ
+13. ห้ามเรียกใช้ชื่อเครื่องมือที่ไม่ได้ระบุไว้ข้างต้น (โดยเฉพาะ repo_browser, python, web_browser) เพราะไม่มีในระบบ และจะทำให้เกิดข้อผิดพลาดร้ายแรง ให้ใช้เฉพาะเครื่องมือที่ให้มาครั้งละตัว"""
 
 
 SUBAGENT_SYSTEM_PROMPT = """คุณคือ Yousini Sub-Agent — เอเจนต์ย่อยที่ทำงานแยกบริบทเพื่อทำงานเฉพาะส่วนหนึ่ง
@@ -315,31 +321,60 @@ def _skill_desc(text: str) -> str:
     return ""
 
 
+def _parse_skill(text: str, fallback_name: str):
+    """แยก frontmatter YAML แบบง่าย (name/description/version) ออกจากเนื้อหา
+    คืน (name, description, body) — ไม่มี frontmatter → ใช้ fallback_name + บรรทัดแรก"""
+    name, desc, body = fallback_name, "", text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            fm = text[3:end]
+            body = text[end + 4:].lstrip("\n")
+            for ln in fm.splitlines():
+                if ":" in ln:
+                    k, _, v = ln.partition(":")
+                    v = v.strip().strip('"').strip("'")
+                    if k.strip() == "name" and v:
+                        name = v
+                    elif k.strip() == "description" and v:
+                        desc = v
+    if not desc:
+        desc = _skill_desc(body)
+    return name, desc, body
+
+
 def load_skill_index(cwd: str, skills_dir: str = SKILLS_DIR):
-    """คืนรายการสกิลแบบย่อ (name, desc) โดยไม่โหลดเนื้อหาเต็ม — ป้องกัน context bloat เมื่อสกิลเยอะ"""
-    d = Path(cwd) / skills_dir
-    if not d.is_dir():
-        return []
+    """คืนรายการสกิลแบบย่อ (name, desc, source) จาก ./skills (📁โปรเจกต์) + ~/.yousini/skills (💾เครื่อง)
+    โดยไม่โหลดเนื้อหาเต็ม — ป้องกัน context bloat; สกิลโปรเจกต์ชนะสกิลเครื่องถ้าชื่อซ้ำ"""
+    seen = set()
     out = []
-    for f in sorted(d.glob("*.md")):
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+    for source, d in (("project", Path(cwd) / skills_dir), ("global", GLOBAL_SKILLS_DIR)):
+        if not d.is_dir():
             continue
-        out.append((f.stem, _skill_desc(text)))
+        for f in sorted(d.glob("*.md")):
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            name, desc, _ = _parse_skill(text, f.stem)
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append((name, desc, source))
     return out
 
 
 def load_skill_full(cwd: str, name: str, skills_dir: str = SKILLS_DIR):
-    d = Path(cwd) / skills_dir
-    p = d / f"{name}.md"
-    if not p.is_file():
-        avail = ", ".join(sorted(x.stem for x in d.glob("*.md"))) if d.is_dir() else ""
-        return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
-    try:
-        return p.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return f"Error: อ่านสกิลไม่ได้: {e}"
+    """โหลดเนื้อหาเต็มของสกิล — หาในโปรเจกต์ก่อน แล้วค่อยหาในเครื่อง"""
+    for d in (Path(cwd) / skills_dir, GLOBAL_SKILLS_DIR):
+        p = d / f"{name}.md"
+        if p.is_file():
+            try:
+                return p.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                return f"Error: อ่านสกิลไม่ได้: {e}"
+    avail = ", ".join(sorted(x.stem for x in (Path(cwd) / skills_dir).glob("*.md"))) if (Path(cwd) / skills_dir).is_dir() else ""
+    return f"Error: ไม่พบสกิล '{name}' (มี: {avail})"
 
 
 def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str:
@@ -351,7 +386,12 @@ def build_system_prompt(context_text: str, skills, memory_text: str = "") -> str
     if context_text.strip():
         parts.append("=== บริบทโปรเจกต์ (YOUSINI.md) ===\n" + context_text)
     if skills:
-        idx = "\n".join(f"- {n}: {d}" for n, d in skills)
+        rows = []
+        for item in skills:
+            n, d = item[0], item[1]
+            src = item[2] if len(item) > 2 else ""
+            rows.append(f"- {n}: {d}" + (" 📁" if src == "project" else " 💾" if src == "global" else ""))
+        idx = "\n".join(rows)
         parts.append(
             "=== Skills ที่มี (โหลดแบบเลือกสรร) ===\n"
             "รายชื่อสกิลพร้อมคำอธิบายสั้นๆ (เนื้อหาเต็มยังไม่ได้โหลดเข้ามา):\n"
@@ -1089,6 +1129,36 @@ class Agent:
             return "memory ไม่พร้อมใช้งาน (ติดตั้ง yousini_memory.py ไม่สำเร็จ)"
         return self.memory.act(action, target, content=content, old_text=old_text)
 
+    def _skill_target_dir(self) -> Path:
+        """ตำแหน่งสร้างสกิล: ./skills ของโปรเจกต์ถ้ามี dir อยู่แล้ว มิฉะนั้น ~/.yousini/skills"""
+        proj = Path(self.cwd) / self.skills_dir
+        return proj if proj.is_dir() else GLOBAL_SKILLS_DIR
+
+    def skill_create(self, name: str, description: str, content: str) -> str:
+        """สร้างสกิลใหม่ (มี frontmatter name/description) — ใช้เมื่อทำงานยากสำเร็จและควรจำวิธี"""
+        target_dir = self._skill_target_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        p = target_dir / f"{name}.md"
+        if p.exists():
+            return f"มีสกิล '{name}' อยู่แล้ว — ใช้ skill_patch เพื่อแก้ไข"
+        fm = f"---\nname: {name}\ndescription: {description}\n---\n"
+        p.write_text(fm + content.lstrip("\n"), encoding="utf-8")
+        self.refresh_context()
+        return f"สร้างสกิล '{name}' แล้ว: {p}"
+
+    def skill_patch(self, name: str, old_string: str, new_string: str) -> str:
+        """แก้เนื้อหาสกิล (search & replace)"""
+        for d in (Path(self.cwd) / self.skills_dir, GLOBAL_SKILLS_DIR):
+            p = d / f"{name}.md"
+            if p.is_file():
+                text = p.read_text(encoding="utf-8")
+                if old_string not in text:
+                    return f"ไม่พบ '{old_string}' ในสกิล '{name}'"
+                p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
+                self.refresh_context()
+                return f"แก้สกิล '{name}' แล้ว"
+        return f"ไม่พบสกิล '{name}'"
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1332,6 +1402,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "batch_edit_files", "description": "แก้ไขหลายไฟล์พร้อมกัน + commit อะตอมิก เหมาะสำหรับ refactor ใหญ่ ใส่รายการ edits = [{path, old_string?, new_string?}]", "parameters": {"type": "object", "properties": {"edits": {"type": "array", "description": "รายการแก้ไฟล์ แต่ละอันมี path + new_string (เรียกใช้ old_string ถ้าต้องการ replace)", "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "new_string"]}}}, "required": ["edits"]}}},
     {"type": "function", "function": {"name": "run_test_loop", "description": "รัน test แล้วแก้ไขอัตโนมัติซ้ำ (auto-fix loop) — เหมาะกับ TDD workflow ใส่ test_cmd เช่น pytest -x", "parameters": {"type": "object", "properties": {"test_cmd": {"type": "string", "description": "คำสั่งรัน test (ค่าเริ่มต้น pytest)", "default": "pytest"}, "max_iterations": {"type": "integer", "description": "จำนวนรอบสูงสุด (ค่าเริ่มต้น 3)", "default": 3}}, "required": []}}},
     {"type": "function", "function": {"name": "memory", "description": "จัดการความจำระยะยาว (จำข้าม session เหมือน Hermes memory): action add/remove/replace/list, target user (ข้อมูลผู้ใช้) หรือ agent (บันทึกของ agent) — บันทึกเฉพาะข้อเท็จจริง/ความชอบ/บทเรียนที่ควรจำข้าม session ห้ามบันทึกความคืบหน้างานชั่วคราว", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "add / remove / replace / list"}, "target": {"type": "string", "description": "user หรือ agent"}, "content": {"type": "string", "description": "ข้อความ (สำหรับ add/replace)"}, "old_text": {"type": "string", "description": "ข้อความค้นหาในรายการเดิม (สำหรับ remove/replace)"}}, "required": ["action", "target"]}}},
+    {"type": "function", "function": {"name": "skill_create", "description": "สร้างสกิลใหม่ (ความรู้/ขั้นตอนที่ควรจำและใช้ซ้ำ): name สั้นๆ, description ขึ้นต้นด้วย 'Use when ...', content คือเนื้อหาเต็ม — ใช้หลังจากทำงานยากสำเร็จเพื่อบันทึกวิธีทำ (self-improvement)", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล (ตัวเล็ก ขีด- เช่น deploy-flow)"}, "description": {"type": "string", "description": "คำอธิบาย ขึ้นต้นด้วย 'Use when ...'"}, "content": {"type": "string", "description": "เนื้อหาเต็มของสกิล (ขั้นตอน)"}}, "required": ["name", "description", "content"]}}},
+    {"type": "function", "function": {"name": "skill_patch", "description": "แก้ไขสกิลที่มีอยู่ (search & replace เนื้อหา) — ใช้เมื่อพบว่าสกิลล้าสมัย/ผิดพลาด", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "ชื่อสกิล"}, "old_string": {"type": "string", "description": "ข้อความเดิมที่จะแทนที่"}, "new_string": {"type": "string", "description": "ข้อความใหม่"}}, "required": ["name", "old_string", "new_string"]}}},
 ]
 
 IMPL = {
@@ -1349,6 +1421,8 @@ IMPL = {
     "batch_edit_files": lambda a, k: k.batch_edit_files(**a),
     "run_test_loop": lambda a, k: k.run_test_loop(**a),
     "memory": lambda a, k: k.memory_tool(**a),
+    "skill_create": lambda a, k: k.skill_create(**a),
+    "skill_patch": lambda a, k: k.skill_patch(**a),
 }
 
 # ข้อความเตือนเมื่อโมเดลเรียก tool ที่ไม่มีในระบบ (เช่น repo_browser ของ gpt-oss)
@@ -1810,10 +1884,12 @@ def _print_skills(agent: Agent):
         console.print(Text("ไม่มีสกิล (โฟลเดอร์ skills/ ว่างหรือไม่มี)", style="yellow"))
         return
     t = Text()
-    for n, c in agent.skills:
-        t.append(f"• {n}", style="bold cyan")
-        t.append(f"  ({len(c)} ตัวอักษร)\n", style="dim")
-    console.print(Panel(t, title=f"สกิลที่โหลด ({len(agent.skills)})", border_style="magenta"))
+    for item in agent.skills:
+        n = item[0]
+        src = item[2] if len(item) > 2 else ""
+        tag = " 📁" if src == "project" else " 💾" if src == "global" else ""
+        t.append(f"• {n}{tag}\n", style="bold cyan")
+    console.print(Panel(t, title=f"สกิลที่โหลด ({len(agent.skills)}) — 📁โปรเจกต์ 💾เครื่อง", border_style="magenta"))
 
 
 def _print_hooks(agent: Agent):

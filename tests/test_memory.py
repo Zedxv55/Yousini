@@ -53,7 +53,7 @@ def test_manager_act_and_inject(tmp_path):
 
 def test_system_prompt_includes_memory(tmp_path):
     sp = yousini.build_system_prompt("", [], memory_text="[user] ชอบภาษาไทย")
-    assert "ความจำระยะยาว" in sp
+    assert "=== ความจำระยะยาว" in sp
     assert "ชอบภาษาไทย" in sp
     sp2 = yousini.build_system_prompt("", [], memory_text="")
-    assert "ความจำระยะยาว" not in sp2
+    assert "=== ความจำระยะยาว" not in sp2
