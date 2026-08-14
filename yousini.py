@@ -202,6 +202,9 @@ AUTO_RUN = os.getenv("AUTO_RUN", "0") == "1"
 CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
+# version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
+APP_VERSION = "3.3.0"
+
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
 CONTEXT_FILE = os.getenv("YOUSINI_CONTEXT", "YOUSINI.md")
@@ -2782,11 +2785,12 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             """คืน (name, role) หรือ None — multi-user ผ่าน users config (team.json/config.json)"""
             try:
                 from yousini_team import role_for_token
-            except Exception:
-                role_for_token = None
-            if role_for_token:
                 return role_for_token(self._client_token(), _read_cfg_light(), master_token=token)
-            return (not token or self._client_token() == token) and ("local", "admin") or None
+            except Exception:
+                pass
+            if not token or self._client_token() == token:
+                return ("local", "admin")
+            return None
 
         def _auth_ok(self):
             return self._auth_user() is not None
@@ -2806,7 +2810,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 self._send(200, web_ui, "text/html; charset=utf-8")
             elif path == "/info":
                 info = {"model": MODEL, "name": "Yousini",
-                        "version": "3.0.0", "cwd": str(Path.cwd()),
+                        "version": APP_VERSION, "cwd": str(Path.cwd()),
                         "safe": safe, "auth": bool(token)}
                 au = self._auth_user()
                 if au:
@@ -3802,6 +3806,11 @@ def cron_main(interval=60, once=False):
 
 def main():
     argv = sys.argv[1:]
+
+    # ---- version ----
+    if argv and argv[0] in ("--version", "-v", "version"):
+        console.print(Text(f"Yousini {APP_VERSION} (Python {sys.version.split()[0]})", style="cyan"))
+        return
 
     # ---- subcommand: serve ----
     if argv and argv[0] == "serve":
