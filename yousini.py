@@ -2217,6 +2217,13 @@ def _print_banner(agent: Agent):
         rows.append(("memory", f"{len(m.inject_text().splitlines())} บรรทัด" if m.inject_text() else "ว่าง"))
     except Exception:
         pass
+    try:
+        from yousini_team import team_status
+        ts = team_status(_read_cfg_light())
+        if ts.get("active"):
+            rows.append(("team", f"{ts.get('workspace')} — {ts.get('name')}"))
+    except Exception:
+        pass
     modes = "รันทันที(auto)" if agent.auto_run else "ถามก่อน"
 
     t = Table.grid(padding=(0, 2))
@@ -2271,6 +2278,7 @@ def _print_help():
         ("/ads [on|off|status]", "เปิด/ปิด sponsor line (ปิดได้เสมอ — pro ไม่มีโฆษณา)"),
         ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
         ("/market [search|install|uninstall]", "ค้นหา/ติดตั้ง skills & tool plugins (marketplace)"),
+        ("/team", "ดูสถานะ workspace ของทีม (registry/สมาชิก/role)"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -2760,17 +2768,28 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
         def log_message(self, *a):
             pass  # เงียบ (มี panel ของ rich อยู่แล้ว)
 
-        def _auth_ok(self):
-            if not token:
-                return True
+        def _client_token(self):
             hdr = self.headers.get("X-Yousini-Token") or ""
-            if hdr == token:
-                return True
+            if hdr:
+                return hdr
             auth = self.headers.get("Authorization", "")
-            if auth.startswith("Bearer ") and auth[7:] == token:
-                return True
+            if auth.startswith("Bearer "):
+                return auth[7:]
             q = urllib.parse.urlparse(self.path).query
-            return urllib.parse.parse_qs(q).get("token", [""])[0] == token
+            return urllib.parse.parse_qs(q).get("token", [""])[0]
+
+        def _auth_user(self):
+            """คืน (name, role) หรือ None — multi-user ผ่าน users config (team.json/config.json)"""
+            try:
+                from yousini_team import role_for_token
+            except Exception:
+                role_for_token = None
+            if role_for_token:
+                return role_for_token(self._client_token(), _read_cfg_light(), master_token=token)
+            return (not token or self._client_token() == token) and ("local", "admin") or None
+
+        def _auth_ok(self):
+            return self._auth_user() is not None
 
         def _send(self, code, body, ctype="text/plain; charset=utf-8"):
             data = body.encode("utf-8") if isinstance(body, str) else body
@@ -2789,6 +2808,18 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 info = {"model": MODEL, "name": "Yousini",
                         "version": "3.0.0", "cwd": str(Path.cwd()),
                         "safe": safe, "auth": bool(token)}
+                au = self._auth_user()
+                if au:
+                    info["user"] = au[0]
+                    info["role"] = au[1]
+                try:
+                    from yousini_team import team_status
+                    ts = team_status(_read_cfg_light())
+                    if ts.get("active"):
+                        info["workspace"] = ts.get("name")
+                        info["workspace_id"] = ts.get("workspace")
+                except Exception:
+                    pass
                 if _HAS_MONET:
                     try:
                         cfg = _read_cfg_light()
@@ -2824,10 +2855,15 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path
             if path.startswith("/api/market/"):
-                if not self._auth_ok():
+                au = self._auth_user()
+                if not au:
                     return self._send(401, json.dumps({"error": "unauthorized"}),
                                       "application/json; charset=utf-8")
                 action = path[len("/api/market/"):].strip("/")
+                if action in ("install", "uninstall", "update") and au[1] != "admin":
+                    return self._send(403, json.dumps({"error": "ต้องมีสิทธิ์ admin ในการจัดการ marketplace"},
+                                                      ensure_ascii=False),
+                                      "application/json; charset=utf-8")
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     payload = json.loads(self.rfile.read(length) or "{}")
@@ -2879,6 +2915,14 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             sid = payload.get("session") or "default"
             if not message:
                 return self._send(400, "empty message")
+            try:
+                from yousini_team import users as _tu
+                multi = bool(_tu(_read_cfg_light()))
+            except Exception:
+                multi = False
+            au = self._auth_user()
+            if multi and au:
+                sid = f"{au[0]}:{sid}"
 
             agent, lock = get_agent(sid)
             self.send_response(200)
@@ -3147,6 +3191,57 @@ def marketplace_main(argv=None):
                             border_style="cyan", padding=(1, 2)))
     else:
         usage()
+
+
+def team_main(argv=None):
+    """CLI: yousini team <status|init|join|leave|users|set-registry>"""
+    from yousini_team import (team_status, init as _init, join as _join, leave as _leave,
+                              users as _users, set_registry as _set_reg, format_status,
+                              resolve_registry)
+    argv = list(argv or [])
+    if not argv:
+        console.print(Panel(format_status(team_status(load_config())), title="Team workspace",
+                            border_style="cyan", padding=(1, 2)))
+        console.print(Text("ใช้: yousini team [status|init <ชื่อ>|join <url>|leave|users|set-registry <url>]",
+                           style="dim"))
+        return
+    cmd = argv[0].lower()
+    cfg = load_config()
+    if cmd == "status":
+        console.print(Panel(format_status(team_status(cfg)), title="Team workspace",
+                            border_style="cyan", padding=(1, 2)))
+    elif cmd == "init" and len(argv) > 1:
+        r = _init(" ".join(argv[1:]))
+        if r.get("ok"):
+            console.print(Text(f"สร้าง workspace แล้ว: {r.get('name')} (id: {r.get('workspace')})", style="green"))
+        else:
+            console.print(Text(r.get("error", "ผิดพลาด"), style="red"))
+    elif cmd == "join" and len(argv) > 1:
+        r = _join(argv[1])
+        if r.get("ok"):
+            console.print(Text(f"เข้าร่วมทีมแล้ว: {r.get('name')} (id: {r.get('workspace')})", style="green"))
+        else:
+            console.print(Text(r.get("error", "ผิดพลาด"), style="red"))
+    elif cmd == "leave":
+        r = _leave()
+        console.print(Text("ออกจาก workspace แล้ว" if r.get("ok") else "ผิดพลาด",
+                           style="green" if r.get("ok") else "red"))
+    elif cmd == "users":
+        us = _users(cfg)
+        if not us:
+            console.print(Text("ยังไม่มีผู้ใช้ — เพิ่มใน config.json (users) หรือ team.json", style="dim"))
+        else:
+            for u in us:
+                console.print(Text(f"  {u['name']}  ({u['role']})  token={u['token'][:6]}…" if u.get("token")
+                                   else f"  {u['name']}  ({u['role']})  (ไม่มี token)", style="cyan"))
+        console.print(Text("registry ที่ใช้: " + (resolve_registry(cfg) or "-"), style="dim"))
+    elif cmd == "set-registry" and len(argv) > 1:
+        r = _set_reg(argv[1])
+        console.print(Text(f"registry ทีม = {r.get('registry') or '(ว่าง → ใช้ค่าเริ่มต้น)'}",
+                           style="green" if r.get("ok") else "red"))
+    else:
+        console.print(Text("ใช้: yousini team [status|init <ชื่อ>|join <url>|leave|users|set-registry <url>]",
+                           style="red"))
 
 
 def mcp_main(allow_exec: bool = False):
@@ -3524,6 +3619,11 @@ def _run_repl(agent: Agent):
         if low == "/market" or low.startswith("/market "):
             _repl_market(user_input[8:].strip())
             continue
+        if low == "/team" or low.startswith("/team "):
+            from yousini_team import team_status, format_status
+            console.print(Panel(format_status(team_status(_read_cfg_light())),
+                                title="Team workspace", border_style="cyan", padding=(1, 2)))
+            continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
@@ -3743,6 +3843,11 @@ def main():
     # ---- subcommand: marketplace / market ----
     if argv and argv[0] in ("marketplace", "market"):
         marketplace_main(argv[1:])
+        return
+
+    # ---- subcommand: team ----
+    if argv and argv[0] == "team":
+        team_main(argv[1:])
         return
 
     # ---- subcommand: login ----

@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.2.0 | MIT | Python 3.10+ | English / Thai |
+| 3.3.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -24,6 +24,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
 - [LSP Server / Code Intelligence](#lsp-server--code-intelligence)
 - [Marketplace / Skills & Plugins](#marketplace--skills--plugins)
+- [Team / Multi-User Workspace](#team--multi-user-workspace)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
@@ -268,6 +269,7 @@ yousini connect https://yousini.example.com --token secret
 | `yousini mcp` | Expose Yousini as an MCP server (`--allow-exec` to enable shell/write) |
 | `yousini lsp` | Start the LSP server over stdio (`yousini lsp [root]`) |
 | `yousini marketplace <cmd>` | Browse / install / update skills & tool plugins (see [Marketplace](#marketplace--skills--plugins)) |
+| `yousini team <cmd>` | Team workspace: status / init / join / leave / users / set-registry (see [Team](#team--multi-user-workspace)) |
 | `yousini mcp-add <name> <cmd>` | Add an external MCP server |
 | `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
 | `yousini login` | Interactive provider selection |
@@ -474,6 +476,43 @@ yousini marketplace info <id>
 - `price` / `currency` — เตรียมโครงสร้างสำหรับการขาย package ในอนาคต (ฟรี = `0`).
 
 Registry: ตั้ง `YOUSINI_REGISTRY` (env) หรือ `registry_url` ใน config.json — ค่าเริ่มต้นชี้ที่รายการ registry ของ Yousini. Catalog โหลดแบบ fail-open (ออฟไลน์ → ใช้แคช), ตั้ง `marketplace_enabled: false` ใน config.json เพื่อปิดทั้งระบบ.
+
+---
+
+## Team / Multi-User Workspace
+
+รัน Yousini ร่วมกันเป็นทีม — workspace แชร์ registry/skills ของทีม และ web server รองรับผู้ใช้หลายคนแบบมีสิทธิ์ (role):
+
+```bash
+yousini team init "DevOps Lab"          # สร้าง workspace โลคอล
+yousini team join <url>                 # เข้าร่วมทีมจาก URL ของ team config ส่วนกลาง
+yousini team set-registry <url>         # ชี้ registry ของทีม
+yousini team users                      # ดูสมาชิก + registry ที่ใช้
+yousini team status                     # ดูสถานะ workspace
+yousini team leave                      # ออกจากทีม (เก็บ config โลคอลไว้)
+```
+
+ในแชทใช้ `/team` และแถบบน (banner) จะแสดง workspace ตอนเปิด session.
+
+**Team config** — `~/.yousini/team.json` (หรือ `YOUSINI_TEAM_FILE`):
+
+```json
+{
+  "workspace": "devops-lab",
+  "name": "DevOps Lab",
+  "url": "https://team.example/team-config.json",
+  "registry": "https://team.example/reg.json",
+  "users": [
+    {"name": "alice", "token": "รหัส", "role": "admin"},
+    {"name": "bob", "token": "รหัส", "role": "member"}
+  ],
+  "rules": {"auto_run": true, "safe": false}
+}
+```
+
+- `url` (หรือ env `YOUSINI_TEAM_URL`) — team config ส่วนกลาง (JSON) ดึงมา merge ทุกครั้ง: ค่า remote ชนะเรื่อง `name`/`registry`/`rules` แต่ `users` ฝั่ง local ชนะ (ผู้ดูแลเครื่องตั้งเองได้). โหลดแบบ fail-open + cache 30 นาที.
+- `users` — multi-user สำหรับ web server: แต่ละคนมี token + role. Role `admin` จัดการ marketplace (install/uninstall/update) ได้, `member` ใช้แชท/LSP/ดู catalog ได้ (ยิงคำสั่งแก้ marketplace จะได้ 403). ไม่มี `users` ตั้งไว้ = โหมด user เดียว (ทุกคนเท่ากับ admin).
+- เปิด server: `yousini serve --token <รหัสหลัก>` — token หลักคือ `owner` (admin). Session ถูกแยกต่อผู้ใช้ (`<user>:<session>`).
 
 ---
 
