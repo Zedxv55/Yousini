@@ -2270,6 +2270,7 @@ def _print_help():
         ("/usage [on|off|reset]", "สถิติการใช้งาน token/tool (เก็บเฉพาะในเครื่อง, opt-in)"),
         ("/ads [on|off|status]", "เปิด/ปิด sponsor line (ปิดได้เสมอ — pro ไม่มีโฆษณา)"),
         ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
+        ("/market [search|install|uninstall]", "ค้นหา/ติดตั้ง skills & tool plugins (marketplace)"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -2696,6 +2697,38 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             return {"ok": False, "error": str(e)}
         return {"ok": False, "error": f"method ไม่รู้จัก: {method}"}
 
+    def market_json(action: str, payload: dict):
+        """marketplace ผ่าน HTTP — เรียกโมดูล yousini_marketplace โดยตรง"""
+        try:
+            from yousini_marketplace import (search_catalog, fetch_catalog, installed_list,
+                                             install as _mi, uninstall as _mu,
+                                             update as _mup, pkg_info,
+                                             marketplace_enabled, format_info,
+                                             registry_url)
+            cfg = _read_cfg_light()
+            if not marketplace_enabled(cfg):
+                return {"ok": False, "error": "marketplace ถูกปิดใช้งาน"}
+            if action == "catalog":
+                return {"ok": True, "packages": search_catalog(payload.get("query", ""), cfg),
+                        "registry": registry_url(cfg)}
+            if action == "installed":
+                return {"ok": True, "packages": installed_list()}
+            if action == "install":
+                src = payload.get("source", "")
+                if not src:
+                    return {"ok": False, "error": "ต้องระบุ source"}
+                return _mi(src, project=bool(payload.get("project")),
+                           force=bool(payload.get("force")), cfg=cfg)
+            if action == "uninstall":
+                return _mu(payload.get("id", ""))
+            if action == "update":
+                return _mup(payload.get("id", ""), cfg=cfg)
+            if action == "info":
+                return {"ok": True, "info": format_info(pkg_info(payload.get("id", ""), cfg))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"action ไม่รู้จัก: {action}"}
+
     def get_agent(sid):
         with reg_lock:
             if sid not in sessions:
@@ -2776,11 +2809,33 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                                       "application/json; charset=utf-8")
                 self._send(200, json.dumps(lsp_json_ok("summary", {}), ensure_ascii=False),
                            "application/json; charset=utf-8")
+            elif path in ("/api/market/catalog", "/api/market/installed"):
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                action = path.rsplit("/", 1)[-1]
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0]
+                self._send(200, json.dumps(market_json(action, {"query": query}),
+                                           ensure_ascii=False),
+                           "application/json; charset=utf-8")
             else:
                 self._send(404, "not found")
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/api/market/"):
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                action = path[len("/api/market/"):].strip("/")
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    payload = json.loads(self.rfile.read(length) or "{}")
+                except Exception:
+                    payload = {}
+                return self._send(200, json.dumps(market_json(action, payload),
+                                                  ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             if path.startswith("/api/lsp/"):
                 if not self._auth_ok():
                     return self._send(401, json.dumps({"error": "unauthorized"}),
@@ -3005,6 +3060,93 @@ def lsp_main(root: str = "."):
     สำคัญ: stdout ต้องสะอาดสำหรับ JSON-RPC เท่านั้น จึงเขียน log ไป stderr"""
     from yousini_lsp import lsp_main as _lsp_run
     _lsp_run(root=root)
+
+
+def marketplace_main(argv=None):
+    """CLI: yousini marketplace <list|search|installed|install|uninstall|update|info>"""
+    from yousini_marketplace import (fetch_catalog, search_catalog, installed_list,
+                                     install as _mkt_install, uninstall as _mkt_uninstall,
+                                     update as _mkt_update, update_all as _mkt_update_all,
+                                     pkg_info, format_catalog, format_installed,
+                                     format_info, marketplace_enabled, registry_url)
+    argv = list(argv or [])
+    cfg = _read_cfg_light()
+
+    def usage():
+        console.print(Text("ใช้: yousini marketplace [list|search <คำ>|installed|install <id|url|path>|"
+                           "uninstall <id>|update <id>|update --all|info <id>]", style="yellow"))
+
+    if not marketplace_enabled(cfg):
+        console.print(Text("Marketplace ถูกปิดใช้งาน — ตั้ง marketplace_enabled: true ใน config.json", style="red"))
+        return
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        usage()
+        return
+
+    cmd = argv[0]
+    rest = argv[1:]
+
+    if cmd == "list":
+        pkgs = fetch_catalog(cfg)
+        console.print(Panel(format_catalog(pkgs), title="Marketplace catalog",
+                            border_style="magenta", padding=(1, 2)))
+        console.print(Text(f"registry: {registry_url(cfg)}", style="dim"))
+    elif cmd == "search":
+        q = " ".join(rest).strip()
+        pkgs = search_catalog(q, cfg)
+        console.print(Panel(format_catalog(pkgs), title=f"ค้นหา: '{q or 'ทั้งหมด'}'",
+                            border_style="magenta", padding=(1, 2)))
+    elif cmd in ("installed", "local"):
+        console.print(Panel(format_installed(), title="Packages ที่ติดตั้ง",
+                            border_style="green", padding=(1, 2)))
+    elif cmd == "install":
+        if not rest:
+            console.print(Text("ใช้: yousini marketplace install <id|url|path> [--project] [--force]", style="red"))
+            return
+        source = rest[0]
+        project = "--project" in rest
+        force = "--force" in rest
+        console.print(Text(f"กำลังติดตั้ง: {source} ...", style="dim"))
+        r = _mkt_install(source, project=project, force=force, cfg=cfg)
+        if r["ok"]:
+            rows = [f"ติดตั้งสำเร็จ: {r['name']} v{r['version']}",
+                    f"skills: {', '.join(r['skills']) or '—'}",
+                    f"tool plugins (MCP): {', '.join(r['mcp']) or '—'}"]
+            console.print(Panel("\n".join(rows), title=f"{r['id']}",
+                                border_style="green", padding=(1, 2)))
+            console.print(Text("รัน /reload (หรือรีสตาร์ท) เพื่อโหลด skills ใหม่", style="dim"))
+        else:
+            console.print(Text(f"ติดตั้งไม่สำเร็จ: {r.get('error', '?')}", style="red"))
+    elif cmd == "uninstall":
+        if not rest:
+            console.print(Text("ใช้: yousini marketplace uninstall <id>", style="red"))
+            return
+        r = _mkt_uninstall(rest[0])
+        if r["ok"]:
+            console.print(Text(f"ถอนการติดตั้ง '{r['id']}' แล้ว (ลบ {r['removed_skills']} skills, "
+                               f"{r['mcp_removed']} MCP servers)", style="green"))
+        else:
+            console.print(Text(r.get("error", "?"), style="red"))
+    elif cmd == "update":
+        if "--all" in rest:
+            results = _mkt_update_all(cfg)
+            for r in results:
+                console.print(Text(f"{r['id']}: {'อัปเดตเป็น v'+str(r.get('version','?')) if r['ok'] else r.get('error','?')}",
+                                   style="green" if r["ok"] else "red"))
+        elif rest:
+            r = _mkt_update(rest[0], cfg=cfg)
+            console.print(Text(f"{r['id']}: {'อัปเดตเป็น v'+str(r.get('version','?')) if r['ok'] else r.get('error','?')}",
+                               style="green" if r["ok"] else "red"))
+        else:
+            console.print(Text("ใช้: yousini marketplace update <id> หรือ update --all", style="red"))
+    elif cmd == "info":
+        if not rest:
+            console.print(Text("ใช้: yousini marketplace info <id>", style="red"))
+            return
+        console.print(Panel(format_info(pkg_info(rest[0], cfg)), title="Package info",
+                            border_style="cyan", padding=(1, 2)))
+    else:
+        usage()
 
 
 def mcp_main(allow_exec: bool = False):
@@ -3232,6 +3374,46 @@ def _format_tier(ti: dict) -> str:
     return "\n".join(lines)
 
 
+def _repl_market(args: str):
+    """/market ... — ติดตั้ง/ค้นหา skills & tool plugins จาก marketplace"""
+    from yousini_marketplace import (search_catalog, install as _mkt_install,
+                                     uninstall as _mkt_uninstall, installed_list,
+                                     format_installed, format_catalog,
+                                     marketplace_enabled, registry_url)
+    cfg = _read_cfg_light()
+    if not marketplace_enabled(cfg):
+        console.print(Text("Marketplace ถูกปิดใช้งาน (config.json → marketplace_enabled)", style="red"))
+        return
+    if not args:
+        console.print(Panel(format_installed(), title="Marketplace — ติดตั้งแล้ว",
+                            border_style="green", padding=(1, 2)))
+        console.print(Text("ใช้: /market search <คำ>  |  /market install <id|url>  |  /market uninstall <id>",
+                           style="dim"))
+        return
+    cmd, _, rest = args.partition(" ")
+    rest = rest.strip()
+    if cmd in ("search", "list"):
+        pkgs = search_catalog(rest, cfg)
+        console.print(Panel(format_catalog(pkgs, max_rows=15),
+                            title=f"Marketplace — {rest or 'ทั้งหมด'}",
+                            border_style="magenta", padding=(1, 2)))
+    elif cmd == "install" and rest:
+        console.print(Text(f"กำลังติดตั้ง: {rest} ...", style="dim"))
+        r = _mkt_install(rest, project="--project" in rest, force="--force" in rest, cfg=cfg)
+        if r["ok"]:
+            console.print(Text(f"ติดตั้งสำเร็จ: {r['name']} v{r['version']} — "
+                               f"skills {len(r['skills'])} · tools {len(r['mcp'])}", style="green"))
+            console.print(Text("รัน /reload เพื่อโหลด skills ใหม่", style="dim"))
+        else:
+            console.print(Text(f"ติดตั้งไม่สำเร็จ: {r.get('error', '?')}", style="red"))
+    elif cmd == "uninstall" and rest:
+        r = _mkt_uninstall(rest)
+        console.print(Text(f"ถอนการติดตั้ง '{r.get('id', rest)}' แล้ว" if r["ok"]
+                           else r.get("error", "?"), style="green" if r["ok"] else "red"))
+    else:
+        console.print(Text("ใช้: /market [search <คำ>|install <id|url>|uninstall <id>]", style="yellow"))
+
+
 def _print_session_summary():
     if not _HAS_MONET:
         return
@@ -3339,6 +3521,9 @@ def _run_repl(agent: Agent):
             msg = _billing_deactivate(cfg)
             save_config(cfg)
             console.print(Text(msg, style="yellow")); continue
+        if low == "/market" or low.startswith("/market "):
+            _repl_market(user_input[8:].strip())
+            continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
@@ -3553,6 +3738,11 @@ def main():
         o = _parse_flags(argv[1:])
         targets = o.get("_", [])
         lsp_main(root=targets[0] if targets else ".")
+        return
+
+    # ---- subcommand: marketplace / market ----
+    if argv and argv[0] in ("marketplace", "market"):
+        marketplace_main(argv[1:])
         return
 
     # ---- subcommand: login ----

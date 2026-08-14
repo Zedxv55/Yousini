@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.1.0 | MIT | Python 3.10+ | English / Thai |
+| 3.2.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -23,6 +23,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Customization / การปรับแต่ง](#customization--การปรับแต่ง)
 - [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
 - [LSP Server / Code Intelligence](#lsp-server--code-intelligence)
+- [Marketplace / Skills & Plugins](#marketplace--skills--plugins)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
@@ -266,6 +267,7 @@ yousini connect https://yousini.example.com --token secret
 | `yousini connect <url>` | Connect to a remote instance |
 | `yousini mcp` | Expose Yousini as an MCP server (`--allow-exec` to enable shell/write) |
 | `yousini lsp` | Start the LSP server over stdio (`yousini lsp [root]`) |
+| `yousini marketplace <cmd>` | Browse / install / update skills & tool plugins (see [Marketplace](#marketplace--skills--plugins)) |
 | `yousini mcp-add <name> <cmd>` | Add an external MCP server |
 | `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
 | `yousini login` | Interactive provider selection |
@@ -430,6 +432,48 @@ The same engine is exposed over HTTP in the web UI — open the **CODE · LSP** 
 | `POST /api/lsp/document-symbols` | `{"file"}` |
 | `POST /api/lsp/workspace-symbols` | `{"query"}` |
 | `GET /api/lsp/summary` | — |
+
+---
+
+## Marketplace / Skills & Plugins
+
+Install skills and tool plugins from a registry — `yousini marketplace`:
+
+```bash
+yousini marketplace list                  # ดู catalog ทั้งหมด (cache 30 นาที)
+yousini marketplace search seo            # ค้นตาม id/name/description/tags
+yousini marketplace install <id|git-url|path> [--project] [--force]
+yousini marketplace installed             # รายการที่ติดตั้งแล้ว
+yousini marketplace uninstall <id>
+yousini marketplace update <id>           # อัปเดต (หรือ update --all)
+yousini marketplace info <id>
+```
+
+ใน session ใช้ `/market [search|install|uninstall <id>]` ได้เช่นกัน และ web UI มี panel **MARKETPLACE** (icon ถุงในแถบบน).
+
+**Package format** — โฟลเดอร์/zip/git repo พร้อม `manifest.json` (หรือ `marketplace.yaml`):
+
+```json
+{
+  "id": "web-tools",
+  "name": "Web Tools",
+  "version": "1.2.0",
+  "description": "ชุดสกิลสำหรับงานเว็บ",
+  "author": "Zedxv55",
+  "license": "MIT",
+  "price": 0,
+  "currency": "USD",
+  "tags": ["web", "seo"],
+  "skills": ["skills/web_audit.md", "skills/seo_check.md"],
+  "mcp_servers": [{"name": "wiki", "cmd": "python wiki_mcp.py"}]
+}
+```
+
+- `skills` — ไฟล์ `.md` ติดตั้งเข้าคลัง skills (`~/.yousini/skills` หรือ `--project` → `./skills`); ระบุรายการ หรือปล่อยให้ auto-detect จาก `skills/*.md`.
+- `mcp_servers` — tool plugins: ติดตั้งแล้วลงทะเบียนเป็น MCP client servers อัตโนมัติ (เครื่องมือขึ้นชื่อ `mcp__<server>__<tool>`).
+- `price` / `currency` — เตรียมโครงสร้างสำหรับการขาย package ในอนาคต (ฟรี = `0`).
+
+Registry: ตั้ง `YOUSINI_REGISTRY` (env) หรือ `registry_url` ใน config.json — ค่าเริ่มต้นชี้ที่รายการ registry ของ Yousini. Catalog โหลดแบบ fail-open (ออฟไลน์ → ใช้แคช), ตั้ง `marketplace_enabled: false` ใน config.json เพื่อปิดทั้งระบบ.
 
 ---
 

@@ -299,6 +299,9 @@ textarea::placeholder{color:var(--faint)}
     <button class="icon-btn" id="codeBtn" title="Code intelligence (LSP)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4 2 8l3 4M11 4l3 4-3 4M9 2.5 7 13.5"/></svg>
     </button>
+    <button class="icon-btn" id="marketBtn" title="Marketplace">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h11L12.5 14h-9L2.5 5.5zM5.5 5.5V4a2.5 2.5 0 0 1 5 0v1.5"/></svg>
+    </button>
     <button class="icon-btn" id="themeBtn" title="สลับธีม">
       <svg class="theme-ic icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
         <circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.9 2.9l1.4 1.4M11.7 11.7l1.4 1.4M13.1 2.9l-1.4 1.4M4.3 11.7l-1.4 1.4"/>
@@ -364,6 +367,21 @@ textarea::placeholder{color:var(--faint)}
     </div>
   </div>
 </aside>
+<aside class="tl cd" id="marketPanel">
+  <div class="tl-head"><span>MARKETPLACE</span><span class="tl-count" id="marketCount">0</span></div>
+  <div class="cd-body">
+    <div class="cd-field"><label>ค้นหา package</label>
+      <input id="mkSearch" spellcheck="false" placeholder="เช่น seo / web / docker ..."></div>
+    <div class="cd-actions">
+      <button class="cd-btn" id="mkSearchBtn">Search</button>
+      <button class="cd-btn" id="mkInstalledBtn">Installed</button>
+      <button class="cd-btn" id="mkRefreshBtn">Catalog</button>
+    </div>
+    <div class="cd-result" id="mkResult">
+      <div class="tl-empty">กด Catalog เพื่อโหลดรายการ package จาก registry</div>
+    </div>
+  </div>
+</aside>
 
 <script>
 /* ---------- util ---------- */
@@ -371,7 +389,8 @@ const chat=document.getElementById('chat'), input=document.getElementById('input
       send=document.getElementById('send'), stopBtn=document.getElementById('stopBtn'),
       newBtn=document.getElementById('newBtn'), tlBtn=document.getElementById('tlBtn'),
       themeBtn=document.getElementById('themeBtn'), tlPanel=document.getElementById('tlPanel'),
-      codeBtn=document.getElementById('codeBtn'), codePanel=document.getElementById('codePanel');
+      codeBtn=document.getElementById('codeBtn'), codePanel=document.getElementById('codePanel'),
+      marketBtn=document.getElementById('marketBtn'), marketPanel=document.getElementById('marketPanel');
 const $=id=>document.getElementById(id);
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -415,9 +434,75 @@ function toggleTimeline(force){
   if(open)$('tlBody').scrollTop=$('tlBody').scrollHeight;
 }
 tlBtn.onclick=()=>toggleTimeline();
-function closePanels(){toggleTimeline(false);toggleCode(false)}
+function closePanels(){toggleTimeline(false);toggleCode(false);toggleMarket(false)}
 $('scrim').onclick=closePanels;
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
+
+/* ---------- marketplace ---------- */
+function toggleMarket(force){
+  const open=force!==undefined?force:!marketPanel.classList.contains('open');
+  marketPanel.classList.toggle('open',open);
+  $('scrim').classList.toggle('on',open);
+  marketBtn.classList.toggle('active',open);
+  if(open){toggleTimeline(false);toggleCode(false);$('mkSearch').focus()}
+}
+marketBtn.onclick=()=>toggleMarket();
+function mkPrice(p){const v=Number(p||0);return v>0?('$'+v+' '+(p&&p.currency?p.currency:'USD')):'ฟรี'}
+function mkRow(pkg,installed){
+  const d=document.createElement('div');d.className='cd-hit';
+  d.innerHTML='<div class="cd-loc">'+esc(pkg.name||pkg.id)+' <b style="color:var(--faint)">v'+esc(pkg.version||'?')+'</b> · <span style="color:var(--ok)">'+mkPrice(pkg)+'</span></div>'+
+    '<div class="cd-txt">'+esc(pkg.description||'')+'</div>';
+  const b=document.createElement('button');b.className='cd-btn';b.style.marginTop='8px';
+  if(installed){b.textContent='Uninstall';b.style.borderColor='rgba(255,107,122,.4)';
+    b.onclick=async()=>{b.disabled=true;b.textContent='...';
+      const r=await marketApi('uninstall',{id:pkg.id});
+      b.disabled=false;mkReload();
+      tl('info','Marketplace — uninstall <b>'+esc(pkg.id)+'</b>: '+esc(r.ok?'สำเร็จ':(r.error||'?')));
+    };}
+  else{b.textContent='Install';b.onclick=async()=>{b.disabled=true;b.textContent='...';
+      const r=await marketApi('install',{source:pkg.id});
+      b.disabled=false;mkReload();
+      tl('info','Marketplace — install <b>'+esc(pkg.id)+'</b>: '+esc(r.ok?('สำเร็จ v'+r.version):(r.error||'?')));
+    };}
+  d.appendChild(b);
+  return d;
+}
+async function marketApi(action,payload){
+  const method=action==='catalog'||action==='installed'?'GET':'POST';
+  const url='api/market/'+action+(method==='GET'&&payload&&payload.query?('?q='+encodeURIComponent(payload.query)):'');
+  const res=await fetch(url,{method,
+    headers:{'Content-Type':'application/json','X-Yousini-Token':TOKEN},
+    body:method==='POST'?JSON.stringify(payload||{}):undefined});
+  if(res.status===401){
+    const t=prompt('เซิร์ฟเวอร์กำหนดให้ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t)}
+    return marketApi(action,payload);
+  }
+  if(!res.ok)throw new Error('HTTP '+res.status);
+  return res.json();
+}
+function mkRender(packages){
+  const out=$('mkResult');out.innerHTML='';
+  $('marketCount').textContent=packages.length;
+  if(!packages.length){out.innerHTML='<div class="tl-empty">ไม่มี package ตามเงื่อนไข</div>';return}
+  const inst={};(marketInstalled||[]).forEach(p=>inst[p.id]=true);
+  packages.forEach(p=>out.appendChild(mkRow(p,!!inst[p.id])));
+}
+let marketInstalled=[], lastView={action:'installed',query:''};
+async function mkLoad(action,query){
+  lastView={action,query:query||''};
+  const out=$('mkResult');out.innerHTML='<div class="tl-empty">กำลังโหลด...</div>';
+  try{
+    if(action==='installed'){const r=await marketApi('installed',{});marketInstalled=r.ok?r.packages:[];mkRender(marketInstalled)}
+    else{const r=await marketApi('catalog',{query:query||''});mkRender(r.ok?r.packages:[])}
+    tl('info','Marketplace — <b>'+action+'</b>'+(query?' '+esc(query):''));
+  }catch(e){out.innerHTML='<div class="tl-empty" style="color:var(--err)">ผิดพลาด: '+esc(e.message)+'</div>'}
+}
+function mkReload(){mkLoad(lastView.action,lastView.query)}
+$('mkSearchBtn').onclick=()=>mkLoad('catalog',$('mkSearch').value.trim());
+$('mkRefreshBtn').onclick=()=>mkLoad('catalog','');
+$('mkInstalledBtn').onclick=()=>mkLoad('installed','');
+$('mkSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('mkSearchBtn').click()}});
+mkLoad('installed','');
 
 /* ---------- code intelligence (LSP) ---------- */
 function toggleCode(force){
