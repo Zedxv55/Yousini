@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.4.0 | MIT | Python 3.10+ | English / Thai |
+| 3.5.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -23,6 +23,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Customization / การปรับแต่ง](#customization--การปรับแต่ง)
 - [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
 - [LSP Server / Code Intelligence](#lsp-server--code-intelligence)
+- [Dashboard / สถิติ](#dashboard)
 - [Marketplace / Skills & Plugins](#marketplace--skills--plugins)
 - [Team / Multi-User Workspace](#team--multi-user-workspace)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
@@ -446,6 +447,21 @@ The same engine is exposed over HTTP in the web UI — open the **CODE · LSP** 
 | `POST /api/lsp/document-symbols` | `{"file"}` |
 | `POST /api/lsp/workspace-symbols` | `{"query"}` |
 | `GET /api/lsp/summary` | — |
+
+### Dashboard
+
+Web UI มี panel **DASHBOARD** (icon กราฟแท่งในแถบบน) — สรุปภาพรวมของเซิร์ฟเวอร์:
+
+| หัวข้อ | ข้อมูล |
+| --- | --- |
+| SERVER | model, version, uptime, cwd, โหมด safe |
+| USAGE | token วันนี้/เซสชัน/รวม + กราฟ 7 วัน + tool ที่ใช้บ่อย (จาก `/usage`, opt-in) |
+| SESSIONS | จำนวน session + session ล่าสุด (ชื่อ/เวลา/จำนวนข้อความ) |
+| MARKETPLACE | จำนวน package ที่ติดตั้ง (และว่าเปิด/ปิด) |
+| TEAM | workspace ที่ใช้งาน + จำนวนสมาชิก |
+| SYMBOLS (LSP) | จำนวน symbol / ไฟล์ที่ index |
+
+HTTP: `GET /api/stats` (ต้องมี token ถ้าเซิร์ฟเวอร์เปิด token) คืน JSON ชุดเดียวกัน.
 
 ---
 

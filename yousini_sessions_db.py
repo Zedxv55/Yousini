@@ -125,3 +125,24 @@ class SessionSearch:
         finally:
             conn.close()
         return rows[:limit]
+
+    def count(self):
+        """จำนวน session ทั้งหมดในฐาน"""
+        conn = self._conn()
+        try:
+            return conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
+        finally:
+            conn.close()
+
+    def recent(self, limit=10):
+        """session ล่าสุด — [{name, saved_at, msgs}] เรียงตามเวลาบันทึก"""
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "SELECT s.name, s.saved_at, s.meta, "
+                "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS msgs "
+                "FROM sessions s ORDER BY s.saved_at DESC LIMIT ?", (limit,))
+            return [{"name": r["name"], "saved_at": r["saved_at"], "msgs": r["msgs"]}
+                    for r in cur]
+        finally:
+            conn.close()

@@ -262,6 +262,18 @@ textarea::placeholder{color:var(--faint)}
 .cd-hit .cd-loc{font-family:var(--mono);font-size:10.5px;color:var(--acc2);margin-bottom:4px;word-break:break-all}
 .cd-hit .cd-txt{font-family:var(--mono);font-size:11.5px;color:var(--dim);line-height:1.55;white-space:pre-wrap;word-break:break-word}
 .cd-hit.cd-def{border-color:rgba(83,212,170,.5);box-shadow:0 0 0 3px rgba(83,212,170,.08)}
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.dash-card{border:1px solid var(--stroke);border-radius:10px;padding:9px 11px;background:var(--panel2);animation:riseIn .22s ease}
+.dash-card .d-k{font-size:9.5px;letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin-bottom:5px}
+.dash-card .d-v{font-family:var(--mono);font-size:17px;font-weight:600;color:var(--acc2);line-height:1.1}
+.dash-card .d-s{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:4px;word-break:break-all}
+.dash-bars{display:flex;align-items:flex-end;gap:5px;height:74px;padding-top:6px}
+.dash-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end}
+.dash-bar .b{width:100%;min-height:3px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--acc1),var(--acc2));opacity:.85;transition:height .3s ease}
+.dash-bar .l{font-size:8.5px;color:var(--faint);white-space:nowrap}
+.dash-tools{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.dash-tool{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:99px;border:1px solid var(--stroke);color:var(--dim)}
+.dash-sec{font-size:9.5px;letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:14px 2px 6px}
 .cd-tree{font-family:var(--mono);font-size:11.5px;color:var(--dim);line-height:1.7}
 .cd-tree .cd-node{cursor:pointer;border-radius:6px;padding:2px 6px;transition:background .14s}
 .cd-tree .cd-node:hover{background:rgba(157,107,255,.1)}
@@ -301,6 +313,9 @@ textarea::placeholder{color:var(--faint)}
     </button>
     <button class="icon-btn" id="marketBtn" title="Marketplace">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h11L12.5 14h-9L2.5 5.5zM5.5 5.5V4a2.5 2.5 0 0 1 5 0v1.5"/></svg>
+    </button>
+    <button class="icon-btn" id="dashBtn" title="Dashboard">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5h12M4 13.5V8M8 13.5V3.5M12 13.5V6"/></svg>
     </button>
     <button class="icon-btn" id="themeBtn" title="สลับธีม">
       <svg class="theme-ic icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -382,6 +397,17 @@ textarea::placeholder{color:var(--faint)}
     </div>
   </div>
 </aside>
+<aside class="tl cd" id="dashPanel">
+  <div class="tl-head"><span>DASHBOARD</span><span class="tl-count" id="dashCount">—</span></div>
+  <div class="cd-body">
+    <div class="cd-actions">
+      <button class="cd-btn" id="dashRefreshBtn">Refresh</button>
+    </div>
+    <div class="cd-result" id="dashResult">
+      <div class="tl-empty">กด Refresh เพื่อโหลดสถิติ (session / usage / LSP / marketplace / team)</div>
+    </div>
+  </div>
+</aside>
 
 <script>
 /* ---------- util ---------- */
@@ -390,7 +416,8 @@ const chat=document.getElementById('chat'), input=document.getElementById('input
       newBtn=document.getElementById('newBtn'), tlBtn=document.getElementById('tlBtn'),
       themeBtn=document.getElementById('themeBtn'), tlPanel=document.getElementById('tlPanel'),
       codeBtn=document.getElementById('codeBtn'), codePanel=document.getElementById('codePanel'),
-      marketBtn=document.getElementById('marketBtn'), marketPanel=document.getElementById('marketPanel');
+      marketBtn=document.getElementById('marketBtn'), marketPanel=document.getElementById('marketPanel'),
+      dashBtn=document.getElementById('dashBtn'), dashPanel=document.getElementById('dashPanel');
 const $=id=>document.getElementById(id);
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -434,7 +461,7 @@ function toggleTimeline(force){
   if(open)$('tlBody').scrollTop=$('tlBody').scrollHeight;
 }
 tlBtn.onclick=()=>toggleTimeline();
-function closePanels(){toggleTimeline(false);toggleCode(false);toggleMarket(false)}
+function closePanels(){toggleTimeline(false);toggleCode(false);toggleMarket(false);toggleDash(false)}
 $('scrim').onclick=closePanels;
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
 
@@ -503,6 +530,110 @@ $('mkRefreshBtn').onclick=()=>mkLoad('catalog','');
 $('mkInstalledBtn').onclick=()=>mkLoad('installed','');
 $('mkSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('mkSearchBtn').click()}});
 mkLoad('installed','');
+
+/* ---------- dashboard ---------- */
+function toggleDash(force){
+  const open=force!==undefined?force:!dashPanel.classList.contains('open');
+  dashPanel.classList.toggle('open',open);
+  $('scrim').classList.toggle('on',open);
+  dashBtn.classList.toggle('active',open);
+  if(open){toggleTimeline(false);toggleCode(false);toggleMarket(false);dashLoad()}
+}
+dashBtn.onclick=()=>toggleDash();
+function dSec(t){const e=document.createElement('div');e.className='dash-sec';e.textContent=t;return e}
+function dCard(k,v,s){
+  const c=document.createElement('div');c.className='dash-card';
+  c.innerHTML='<div class="d-k">'+esc(k)+'</div><div class="d-v">'+esc(v)+'</div>'+
+    (s?'<div class="d-s">'+esc(s)+'</div>':'');
+  return c;
+}
+function dTools(tools,out){
+  if(!tools||!tools.length)return;
+  const w=document.createElement('div');w.className='dash-tools';
+  tools.slice(0,8).forEach(([n,v])=>{
+    const s=document.createElement('span');s.className='dash-tool';s.textContent=n+': '+v;w.appendChild(s);
+  });
+  out.appendChild(w);
+}
+function dBars(last7){
+  const w=document.createElement('div');w.className='dash-bars';
+  const max=Math.max(1,...last7.map(d=>d.prompt+d.completion));
+  last7.forEach(d=>{
+    const col=document.createElement('div');col.className='dash-bar';
+    const b=document.createElement('div');b.className='b';
+    b.style.height=Math.max(4,Math.round(100*(d.prompt+d.completion)/max))+'%';
+    b.title=(d.date)+' — '+(d.prompt+d.completion)+' tok ('+d.turns+' turns)';
+    const l=document.createElement('div');l.className='l';l.textContent=d.date.slice(5);
+    col.appendChild(b);col.appendChild(l);w.appendChild(col);
+  });
+  return w;
+}
+function dUptime(s){
+  const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+  return (h?h+'h ':'')+(h||m?m+'m ':'')+x+'s';
+}
+async function dashLoad(){
+  const out=$('dashResult');out.innerHTML='<div class="tl-empty">กำลังโหลด...</div>';
+  try{
+    const res=await fetch('api/stats',{headers:{'X-Yousini-Token':TOKEN}});
+    if(res.status===401){
+      const t=prompt('เซิร์ฟเวอร์กำหนดให้ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t);return dashLoad()}
+    }
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const d=await res.json();
+    out.innerHTML='';
+    $('dashCount').textContent=(d.sessions&&d.sessions.count!=null)?d.sessions.count:'—';
+    /* server */
+    const srv=d.server||{};out.appendChild(dSec('SERVER'));
+    const sgrid=document.createElement('div');sgrid.className='dash-grid';
+    sgrid.appendChild(dCard('model',srv.model||'—'));
+    sgrid.appendChild(dCard('version',srv.version||'—'));
+    sgrid.appendChild(dCard('uptime',dUptime(srv.uptime_s||0)));
+    sgrid.appendChild(dCard('mode',srv.safe?'safe':'full',srv.cwd||''));
+    out.appendChild(sgrid);
+    /* usage */
+    const u=d.usage||{};out.appendChild(dSec('USAGE'+(u.enabled?'':' (ปิด — /usage on)')));
+    const ugrid=document.createElement('div');ugrid.className='dash-grid';
+    const tk=x=>x?((x.prompt||0)+(x.completion||0)).toLocaleString()+' tok':'—';
+    if(u.enabled){
+      ugrid.appendChild(dCard('วันนี้',tk(u.today),u.today?'('+u.today.turns+' turns)':''));
+      ugrid.appendChild(dCard('เซสชัน',tk(u.session),u.session?'('+u.session.turns+' turns)':''));
+      ugrid.appendChild(dCard('รวม',tk(u.all),u.all?'('+u.all.turns+' turns · '+u.all.tools.length+' tools)':''));
+      out.appendChild(ugrid);
+      if(u.last7)out.appendChild(dBars(u.last7));
+      if(u.all&&u.all.tools)dTools(u.all.tools,out);
+    }else{out.appendChild(dCard('status','ปิด','เปิดด้วย /usage on — เก็บเฉพาะในเครื่อง'))}
+    /* sessions */
+    const se=d.sessions||{};out.appendChild(dSec('SESSIONS'+(se.count!=null?(' ('+se.count+')'):'')));
+    if(se.recent&&se.recent.length){
+      const s2=document.createElement('div');s2.className='dash-grid';
+      se.recent.forEach(r=>{
+        const c=document.createElement('div');c.className='dash-card';
+        c.innerHTML='<div class="d-k">'+esc(r.name)+'</div><div class="d-s">'+esc(r.saved_at||'')+' · '+esc(r.msgs)+' ข้อความ</div>';
+        s2.appendChild(c);
+      });
+      out.appendChild(s2);
+    }else{out.appendChild(dCard('—','ไม่มี session','เริ่มแชทเพื่อบันทึก session'))}
+    /* market */
+    const mk=d.market||{};out.appendChild(dSec('MARKETPLACE'));
+    const mgrid=document.createElement('div');mgrid.className='dash-grid';
+    mgrid.appendChild(dCard('installed',mk.installed!=null?mk.installed:'—',mk.enabled?'เปิด':'ปิดใช้งาน'));
+    out.appendChild(mgrid);
+    /* team */
+    const tm=d.team||{};out.appendChild(dSec('TEAM'));
+    const tgrid=document.createElement('div');tgrid.className='dash-grid';
+    tgrid.appendChild(dCard('workspace',tm.active?(tm.name||tm.workspace||'—'):'ไม่มี',
+      tm.active?('สมาชิก '+tm.users+' คน'):'yousini team init/join เพื่อเข้าร่วม'));
+    out.appendChild(tgrid);
+    /* symbols */
+    const sy=d.symbols||{};out.appendChild(dSec('SYMBOLS (LSP)'));
+    const ygrid=document.createElement('div');ygrid.className='dash-grid';
+    ygrid.appendChild(dCard('symbols',sy.total!=null?sy.total:'—',sy.files!=null?(sy.files+' ไฟล์'):''));
+    out.appendChild(ygrid);
+    tl('info','Dashboard — โหลดสถิติแล้ว');
+  }catch(e){out.innerHTML='<div class="tl-empty" style="color:var(--err)">ผิดพลาด: '+esc(e.message)+'</div>'}
+}
+$('dashRefreshBtn').onclick=()=>dashLoad();
 
 /* ---------- code intelligence (LSP) ---------- */
 function toggleCode(force){

@@ -31,6 +31,7 @@ import atexit
 import threading
 import subprocess
 import difflib
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -203,7 +204,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.5.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -2678,6 +2679,60 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
     reg_lock = threading.Lock()
     store = SessionStore(SESSION_DIR)
     lsp = LSPEngine(root=str(Path.cwd()))
+    serve_started = time.time()
+
+    def stats_json():
+        """dashboard — รวมสถิติ server/usage/sessions/market/team/symbols"""
+        import sqlite3
+        out = {
+            "server": {"model": MODEL, "version": APP_VERSION, "cwd": str(Path.cwd()),
+                       "safe": safe, "auth": bool(token),
+                       "uptime_s": int(time.time() - serve_started)},
+        }
+        try:
+            from yousini_usage import stats as _ustats
+            out["usage"] = _ustats()
+        except Exception as e:
+            out["usage"] = {"error": str(e)}
+        try:
+            from yousini_sessions_db import SessionSearch
+            SessionSearch(SESSION_DIR / "search.db")  # สร้าง schema ถ้ายังไม่มี
+            conn = sqlite3.connect(str(SESSION_DIR / "search.db"))
+            out["sessions"] = {
+                "count": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
+                "recent": [
+                    {"name": r[0], "saved_at": r[1], "msgs": r[2]}
+                    for r in conn.execute(
+                        "SELECT s.name, s.saved_at, "
+                        "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) "
+                        "FROM sessions s ORDER BY s.saved_at DESC LIMIT 8")],
+            }
+            conn.close()
+        except Exception as e:
+            out["sessions"] = {"error": str(e)}
+        try:
+            from yousini_marketplace import installed_list, marketplace_enabled
+            cfg = _read_cfg_light()
+            out["market"] = {"enabled": marketplace_enabled(cfg),
+                             "installed": len(installed_list())}
+        except Exception as e:
+            out["market"] = {"error": str(e)}
+        try:
+            from yousini_team import team_status
+            ts = team_status(_read_cfg_light())
+            out["team"] = {"active": bool(ts.get("active")),
+                           "name": ts.get("name"), "workspace": ts.get("workspace"),
+                           "users": len(ts.get("users", []))}
+        except Exception:
+            out["team"] = {"active": False}
+        try:
+            from yousini_symbols import SymbolIndex
+            s = SymbolIndex(str(Path.cwd())).summary()
+            out["symbols"] = s
+        except Exception:
+            out["symbols"] = {"total": 0, "files": 0}
+        return {"ok": True, **out}
+
 
     def resolve_file(file: str):
         p = Path(file or "")
@@ -2852,6 +2907,12 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0]
                 self._send(200, json.dumps(market_json(action, {"query": query}),
                                            ensure_ascii=False),
+                           "application/json; charset=utf-8")
+            elif path == "/api/stats":
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                self._send(200, json.dumps(stats_json(), ensure_ascii=False),
                            "application/json; charset=utf-8")
             else:
                 self._send(404, "not found")

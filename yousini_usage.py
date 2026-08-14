@@ -182,6 +182,50 @@ def summary_short() -> str:
             f"{sess.get('turns', 0)} turns · {sum((sess.get('tools') or {}).values())} tools")
 
 
+def stats() -> dict:
+    """ข้อมูลแบบ dict สำหรับ dashboard — ครอบ: วันนี้ / เซสชัน / รวม / 7 วันล่าสุด / tools"""
+    with _LOCK:
+        d = _load()
+    enabled = bool(d.get("opt_in"))
+    days = d.get("days", {})
+    today = _today()
+    dt = days.get(today, {})
+    sess = d.get("session", {})
+
+    def tools_flat(x):
+        return sorted(((k, int(v)) for k, v in (x.get("tools") or {}).items()),
+                      key=lambda kv: -kv[1])[:8]
+
+    last7 = []
+    from datetime import datetime, timedelta
+    for i in range(6, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        x = days.get(day, {})
+        last7.append({"date": day, "prompt": int(x.get("prompt", 0)),
+                      "completion": int(x.get("completion", 0)),
+                      "turns": int(x.get("turns", 0)),
+                      "tools": sum((x.get("tools") or {}).values())})
+
+    all_p = sum(int(x.get("prompt", 0)) for x in days.values())
+    all_c = sum(int(x.get("completion", 0)) for x in days.values())
+    all_turns = sum(int(x.get("turns", 0)) for x in days.values())
+    all_tools = {}
+    for x in days.values():
+        for k, v in (x.get("tools") or {}).items():
+            all_tools[k] = all_tools.get(k, 0) + int(v)
+
+    return {
+        "enabled": enabled,
+        "today": {"prompt": int(dt.get("prompt", 0)), "completion": int(dt.get("completion", 0)),
+                  "turns": int(dt.get("turns", 0)), "tools": tools_flat(dt)},
+        "session": {"prompt": int(sess.get("prompt", 0)), "completion": int(sess.get("completion", 0)),
+                    "turns": int(sess.get("turns", 0)), "tools": tools_flat(sess)},
+        "all": {"prompt": all_p, "completion": all_c, "turns": all_turns,
+                "tools": sorted(((k, v) for k, v in all_tools.items()), key=lambda kv: -kv[1])[:8]},
+        "last7": last7,
+    }
+
+
 def reset() -> None:
     with _LOCK:
         was = _ENABLED if _ENABLED is not None else bool(_load().get("opt_in"))
