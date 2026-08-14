@@ -204,7 +204,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.6.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -2283,6 +2283,9 @@ def _print_help():
         ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
         ("/market [search|install|uninstall]", "ค้นหา/ติดตั้ง skills & tool plugins (marketplace)"),
         ("/team", "ดูสถานะ workspace ของทีม (registry/สมาชิก/role)"),
+        ("/agent send <worker> <โจทย์>", "ส่งงานให้ agent อื่นผ่านคิว (collaboration)"),
+        ("/agent status|result <id>", "ดูสถานะคิว / ผลลัพธ์งาน"),
+        ("/work", "ประมวลผลงานที่ค้างในคิวตอนนี้"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -2731,6 +2734,11 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             out["symbols"] = s
         except Exception:
             out["symbols"] = {"total": 0, "files": 0}
+        try:
+            from yousini_queue import counts as _qcounts
+            out["queue"] = _qcounts()
+        except Exception:
+            out["queue"] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
         return {"ok": True, **out}
 
 
@@ -2793,6 +2801,41 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 return {"ok": True, "info": format_info(pkg_info(payload.get("id", ""), cfg))}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"action ไม่รู้จัก: {action}"}
+
+    def queue_json(action: str, payload: dict):
+        """agent collaboration queue ผ่าน HTTP"""
+        from yousini_queue import (enqueue, get, claim, complete, fail, requeue,
+                                   list_tasks, counts)
+        if action == "status":
+            return {"ok": True, "counts": counts(),
+                    "tasks": list_tasks(limit=20)}
+        if action == "enqueue":
+            prompt = (payload.get("prompt") or "").strip()
+            if not prompt:
+                return {"ok": False, "error": "ต้องระบุ prompt"}
+            t = enqueue(prompt, worker=payload.get("worker") or "default",
+                        from_=payload.get("from") or "api",
+                        priority=payload.get("priority") or 0)
+            return {"ok": True, "task": t}
+        if action == "claim":
+            t = claim(payload.get("worker") or "default")
+            return {"ok": True, "task": t, "claimed": bool(t)}
+        if action == "complete":
+            t = complete(payload.get("id", ""), result=payload.get("result", ""))
+            if not t:
+                return {"ok": False, "error": "ไม่พบงาน"}
+            return {"ok": True, "task": t}
+        if action == "fail":
+            t = fail(payload.get("id", ""), error=payload.get("error", ""))
+            if not t:
+                return {"ok": False, "error": "ไม่พบงาน"}
+            return {"ok": True, "task": t}
+        if action == "requeue":
+            t = requeue(payload.get("id", ""))
+            return {"ok": True, "task": t}
+        if action == "get":
+            return {"ok": True, "task": get(payload.get("id", ""))}
         return {"ok": False, "error": f"action ไม่รู้จัก: {action}"}
 
     def get_agent(sid):
@@ -2914,6 +2957,19 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                                       "application/json; charset=utf-8")
                 self._send(200, json.dumps(stats_json(), ensure_ascii=False),
                            "application/json; charset=utf-8")
+            elif path == "/api/queue/status":
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                self._send(200, json.dumps(queue_json("status", {}), ensure_ascii=False),
+                           "application/json; charset=utf-8")
+            elif path.startswith("/api/queue/get"):
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                qid = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id", [""])[0]
+                self._send(200, json.dumps(queue_json("get", {"id": qid}), ensure_ascii=False),
+                           "application/json; charset=utf-8")
             else:
                 self._send(404, "not found")
 
@@ -2965,6 +3021,19 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 return self._send(200 if ok else 404,
                                   json.dumps({"ok": ok, "name": name, "result": str(out)[:2000]},
                                              ensure_ascii=False),
+                                  "application/json; charset=utf-8")
+            if path.startswith("/api/queue/"):
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                action = path[len("/api/queue/"):].strip("/")
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    payload = json.loads(self.rfile.read(length) or "{}")
+                except Exception:
+                    payload = {}
+                return self._send(200, json.dumps(queue_json(action, payload),
+                                                  ensure_ascii=False),
                                   "application/json; charset=utf-8")
             if path != "/api/chat":
                 return self._send(404, "not found")
@@ -3256,6 +3325,79 @@ def marketplace_main(argv=None):
                             border_style="cyan", padding=(1, 2)))
     else:
         usage()
+
+
+def agent_main(argv=None):
+    """CLI: yousini agent <send|status|result|requeue|prune|clear> + yousini work [--once]"""
+    from yousini_queue import (enqueue, get, counts, list_tasks, requeue, prune_done,
+                               clear, reclaim_stale, format_task, format_queue)
+    argv = list(argv or [])
+    if not argv:
+        console.print(Panel(format_queue(list_tasks(), title="Queue") + "\n\n" +
+                            "pending {pending} · running {running} · done {done} · failed {failed}".format(**counts()),
+                            title="Agent queue", border_style="cyan", padding=(1, 2)))
+        console.print(Text("ใช้: yousini agent send <worker> <โจทย์> | status | result <id> | requeue <id> | prune | clear",
+                           style="dim"))
+        return
+    cmd = argv[0].lower()
+    if cmd == "send" and len(argv) > 2:
+        worker = argv[1]
+        prompt = " ".join(argv[2:])
+        t = enqueue(prompt, worker=worker, from_="cli")
+        console.print(Text(f"ส่งงานแล้ว: #{t['id']} → worker '{worker}' (รอในคิว)", style="green"))
+        console.print(Text("worker รัน `yousini work` เพื่อรับงาน (หรือรอให้มันดึงผ่าน API)", style="dim"))
+    elif cmd == "status":
+        c = counts()
+        console.print(Panel(format_queue(list_tasks(), title="Queue") + "\n\n" +
+                            "pending {pending} · running {running} · done {done} · failed {failed}".format(**c),
+                            title="Agent queue", border_style="cyan", padding=(1, 2)))
+    elif cmd == "result" and len(argv) > 1:
+        console.print(Panel(format_task(get(argv[1])), title="Task", border_style="cyan",
+                            padding=(1, 2)))
+    elif cmd == "requeue" and len(argv) > 1:
+        t = requeue(argv[1])
+        console.print(Text(f"requeue #{argv[1]} → {t.get('status') if t else 'ไม่พบ'}", style="green"))
+    elif cmd == "prune":
+        n = prune_done()
+        console.print(Text(f"ลบงานที่เสร็จแล้วเกินเกณฑ์ {n} งาน", style="green"))
+    elif cmd == "clear":
+        n = clear()
+        console.print(Text(f"ล้างคิว {n} งาน", style="green"))
+    elif cmd == "reclaim":
+        n = reclaim_stale()
+        console.print(Text(f"ย้อนงานที่ค้าง 'running' กลับเป็น pending {n} งาน", style="yellow"))
+    else:
+        console.print(Text("ใช้: yousini agent send <worker> <โจทย์> | status | result <id> | requeue <id> | prune | clear",
+                           style="red"))
+
+
+def work_main(once=False, interval=5.0, worker="default", max_tasks=50):
+    """worker loop: ดึงงานจากคิว → รัน → บันทึกผล. --once = รอบเดียว"""
+    from yousini_queue import counts, process_once, reclaim_stale
+    if once:
+        reclaim_stale()
+        done = process_once(worker=worker, max_tasks=max_tasks)
+        console.print(Text(f"Worker '{worker}' ทำงานเสร็จ {len(done)} งาน", style="green"))
+        return
+    console.print(Text(f"Worker '{worker}' เริ่มรอรับงาน (poll ทุก {interval}s) — Ctrl+C หยุด", style="cyan"))
+    while True:
+        try:
+            reclaim_stale()
+            c = counts()
+            if c["pending"]:
+                done = process_once(worker=worker, max_tasks=max_tasks)
+                for t in done:
+                    tag = f"#{t.get('id')}"
+                    if t.get("status") == "done":
+                        console.print(Text(f"✅ {tag} เสร็จ ({len(t.get('result') or '')} ตัวอักษร)", style="green"))
+                    else:
+                        console.print(Text(f"❌ {tag} ล้ม: {t.get('error')}", style="red"))
+        except KeyboardInterrupt:
+            console.print(Text("\nหยุด worker", style="dim"))
+            break
+        except Exception as e:
+            console.print(Text(f"worker error: {e}", style="red"))
+        time.sleep(interval)
 
 
 def team_main(argv=None):
@@ -3689,6 +3831,36 @@ def _run_repl(agent: Agent):
             console.print(Panel(format_status(team_status(_read_cfg_light())),
                                 title="Team workspace", border_style="cyan", padding=(1, 2)))
             continue
+        if low == "/agent" or low.startswith("/agent "):
+            from yousini_queue import enqueue as _qe, get as _qget, counts as _qcounts, \
+                list_tasks as _qlist, format_task, format_queue
+            parts = user_input[7:].strip().split(None, 2)
+            sub = parts[0].lower() if parts else "status"
+            if sub == "send" and len(parts) >= 3:
+                t = _qe(parts[2], worker=parts[1], from_="repl")
+                console.print(Text(f"ส่งงานแล้ว: #{t['id']} → '{parts[1]}' (รอในคิว)", style="green"))
+                console.print(Text("อีกเครื่อง/worker รัน `yousini work` หรือเรียก /api/queue/claim เพื่อรับงาน", style="dim"))
+            elif sub == "result" and len(parts) >= 2:
+                console.print(Panel(format_task(_qget(parts[1])), title="Task",
+                                    border_style="cyan", padding=(1, 2)))
+            else:
+                c = _qcounts()
+                console.print(Panel(format_queue(_qlist(), title="Queue") + "\n\n" +
+                                    "pending {pending} · running {running} · done {done} · failed {failed}".format(**c),
+                                    title="Agent queue", border_style="cyan", padding=(1, 2)))
+                console.print(Text("ใช้: /agent send <worker> <โจทย์> | result <id> | status", style="dim"))
+            continue
+        if low == "/work":
+            from yousini_queue import process_once
+            console.print(Text("กำลังประมวลผลงานที่ค้างในคิว...", style="yellow"))
+            done = process_once()
+            for t in done:
+                if t.get("status") == "done":
+                    console.print(Text(f"✅ {t.get('id')} เสร็จ ({len(t.get('result') or '')} ตัวอักษร)", style="green"))
+                else:
+                    console.print(Text(f"❌ {t.get('id')} ล้ม: {t.get('error')}", style="red"))
+            console.print(Text(f"ทำงานเสร็จ {len(done)} งาน", style="green"))
+            continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue
@@ -3918,6 +4090,18 @@ def main():
     # ---- subcommand: team ----
     if argv and argv[0] == "team":
         team_main(argv[1:])
+        return
+
+    # ---- subcommand: agent (collaboration queue) ----
+    if argv and argv[0] == "agent":
+        agent_main(argv[1:])
+        return
+
+    # ---- subcommand: work (worker loop) ----
+    if argv and argv[0] == "work":
+        o = _parse_flags(argv[1:])
+        work_main(once=bool(o.get("once")), interval=float(o.get("interval", 5)),
+                  worker=str(o.get("worker", "default")), max_tasks=int(o.get("max", 50)))
         return
 
     # ---- subcommand: login ----

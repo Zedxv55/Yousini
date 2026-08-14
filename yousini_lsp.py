@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlparse
 
 from yousini_symbols import SymbolIndex
 
-LSP_VERSION = "3.5.0"
+LSP_VERSION = "3.6.0"
 _WORD_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 

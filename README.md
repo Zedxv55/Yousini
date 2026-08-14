@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.5.0 | MIT | Python 3.10+ | English / Thai |
+| 3.6.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -26,6 +26,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Dashboard / สถิติ](#dashboard)
 - [Marketplace / Skills & Plugins](#marketplace--skills--plugins)
 - [Team / Multi-User Workspace](#team--multi-user-workspace)
+- [Agent Collaboration / คิวงาน](#agent-collaboration--คิวงาน)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
@@ -282,6 +283,8 @@ yousini connect https://yousini.example.com --token secret
 | `yousini mcp` | Expose Yousini as an MCP server (`--allow-exec` to enable shell/write) |
 | `yousini lsp` | Start the LSP server over stdio (`yousini lsp [root]`) |
 | `yousini marketplace <cmd>` | Browse / install / update skills & tool plugins (see [Marketplace](#marketplace--skills--plugins)) |
+| `yousini agent <cmd>` | Agent collaboration queue: send / status / result / requeue / prune / clear / reclaim |
+| `yousini work [--once]` | Run as a worker: pull queued tasks, run them, save results |
 | `yousini team <cmd>` | Team workspace: status / init / join / leave / users / set-registry (see [Team](#team--multi-user-workspace)) |
 | `yousini mcp-add <name> <cmd>` | Add an external MCP server |
 | `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
@@ -541,6 +544,41 @@ yousini team leave                      # ออกจากทีม (เก็
 - `url` (หรือ env `YOUSINI_TEAM_URL`) — team config ส่วนกลาง (JSON) ดึงมา merge ทุกครั้ง: ค่า remote ชนะเรื่อง `name`/`registry`/`rules` แต่ `users` ฝั่ง local ชนะ (ผู้ดูแลเครื่องตั้งเองได้). โหลดแบบ fail-open + cache 30 นาที.
 - `users` — multi-user สำหรับ web server: แต่ละคนมี token + role. Role `admin` จัดการ marketplace (install/uninstall/update) ได้, `member` ใช้แชท/LSP/ดู catalog ได้ (ยิงคำสั่งแก้ marketplace จะได้ 403). ไม่มี `users` ตั้งไว้ = โหมด user เดียว (ทุกคนเท่ากับ admin).
 - เปิด server: `yousini serve --token <รหัสหลัก>` — token หลักคือ `owner` (admin). Session ถูกแยกต่อผู้ใช้ (`<user>:<session>`).
+
+---
+
+## Agent Collaboration / คิวงาน
+
+ส่งงานระหว่าง agent (agent-to-agent) ผ่าน **task queue** — persistent ใช้ร่วมกันได้หลายเครื่อง/หลายโปรเซส:
+
+```bash
+yousini agent send <worker> <โจทย์>     # ส่งงานเข้ารอคิว (จาก="cli")
+yousini agent status                     # ดูคิว + สถานะ (pending/running/done/failed)
+yousini agent result <id>                # ดูผลลัพธ์งาน
+yousini agent requeue <id>               # ย้อนกลับเป็น pending
+yousini agent reclaim                    # งาน running ที่ค้างเกิน 5 นาที → pending
+yousini agent prune                      # ลบงานที่เสร็จแล้วเกินเกณฑ์
+yousini agent clear                      # ล้างคิว
+
+yousini work --once                      # worker: ประมวลผลงานค้างตอนนี้
+yousini work --worker qa-1 --interval 5  # worker loop: poll ทุก 5s
+```
+
+ในแชท: `/agent send <worker> <โจทย์>`, `/agent status`, `/agent result <id>`, และ `/work` (ประมวลผลคิวทันที).
+
+**ทำงานข้ามเครื่อง** — ทุกอย่างในคิวเป็น HTTP ได้ (`/api/queue/*`, ต้องมี token ถ้าตั้งไว้):
+
+| Method/Path | การทำงาน |
+| --- | --- |
+| `POST /api/queue/enqueue` | `{"prompt","worker","priority"}` → เพิ่มงาน |
+| `POST /api/queue/claim` | `{"worker"}` → รับงานถัดไป (priority สูงสุดก่อน) → `running` |
+| `POST /api/queue/complete` | `{"id","result"}` → เสร็จ |
+| `POST /api/queue/fail` | `{"id","error"}` → ล้มเหลว |
+| `POST /api/queue/requeue` | `{"id"}` → กลับเป็น pending |
+| `GET /api/queue/status` | สถานะ + งานล่าสุด |
+| `GET /api/queue/get?id=<id>` | ดูงาน |
+
+โครงงาน: `{id, from, worker, prompt, priority, status, created_at, started_at, done_at, result, error}` — งาน `running` ที่ค้างเกิน `YOUSINI_QUEUE_STALE` (ค่าเริ่มต้น 300s, worker ตายกลางทาง) ถูกย้อนกลับเป็น pending อัตโนมัติ. สถานะคิวแสดงใน DASHBOARD ด้วย. คิวเก็บที่ `~/.yousini/queue.json` (หรือ `YOUSINI_QUEUE_FILE`).
 
 ---
 
