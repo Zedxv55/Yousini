@@ -3,219 +3,450 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Yousini · Codex-style Console</title>
+<title>Yousini Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0a0a0f; --bg2:#0e0e15; --panel:#12121c; --stroke:rgba(255,255,255,.07);
-  --ink:#e8e8f0; --dim:#8a8a9e; --faint:#5c5c72;
-  --accent:#4d9fff; --accent2:#7c5cff; --ok:#3ddc97; --warn:#ffcf5c; --danger:#ff6b6b;
-  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
-  --sans:'Inter','IBM Plex Sans Thai',system-ui,sans-serif;
+  --bg:#07070c; --bg2:#0c0c14; --panel:rgba(255,255,255,.035); --panel2:rgba(255,255,255,.055);
+  --stroke:rgba(255,255,255,.08); --stroke2:rgba(255,255,255,.14);
+  --ink:#ececf4; --dim:#9a9ab0; --faint:#5f5f78;
+  --acc1:#6d5ef8; --acc2:#9d6bff; --blue:#4d9fff; --ok:#3ddc97; --warn:#ffcf5c; --err:#ff6b7a;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Consolas,monospace;
+  --sans:'Inter','IBM Plex Sans Thai',system-ui,-apple-system,sans-serif;
+  --grad:linear-gradient(135deg,#6d5ef8,#9d6bff 55%,#4d9fff);
+  --radius:16px;
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
-  font-family:var(--sans); color:var(--ink); background:
-  radial-gradient(1200px 500px at 80% -10%, rgba(124,92,255,.10), transparent 60%),
-  radial-gradient(900px 420px at 10% 110%, rgba(77,159,255,.08), transparent 55%),
-  var(--bg);
-  overflow:hidden; -webkit-font-smoothing:antialiased; font-size:14px;
+  font-family:var(--sans); color:var(--ink); font-size:14px; line-height:1.65;
+  background:
+    radial-gradient(1100px 520px at 85% -10%, rgba(157,107,255,.14), transparent 60%),
+    radial-gradient(900px 480px at 5% 112%, rgba(77,159,255,.10), transparent 55%),
+    radial-gradient(700px 400px at 50% 50%, rgba(109,94,248,.05), transparent 70%),
+    var(--bg);
+  overflow:hidden; -webkit-font-smoothing:antialiased;
 }
-::selection{background:rgba(77,159,255,.35)}
+::selection{background:rgba(109,94,248,.45)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10);border-radius:9px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.18)}
+::-webkit-scrollbar-track{background:transparent}
 /* ---------- layout ---------- */
-.app{height:100%;display:flex;flex-direction:column;max-width:920px;margin:0 auto;padding:0 18px}
-.top{display:flex;align-items:center;gap:12px;padding:14px 2px 10px;flex:none}
-.mark{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:1.5px;
-  background:linear-gradient(100deg,#e8e8f0,#7c5cff 60%,#4d9fff);-webkit-background-clip:text;background-clip:text;color:transparent}
-.top .crumb{font-family:var(--mono);color:var(--faint);font-size:11.5px}
-.top .crumb b{color:var(--dim);font-weight:500}
+.app{height:100%;max-width:940px;margin:0 auto;padding:0 20px;display:flex;flex-direction:column}
+/* ---------- header ---------- */
+.top{flex:none;display:flex;align-items:center;gap:12px;padding:16px 2px 12px}
+.brand{display:flex;align-items:center;gap:10px;user-select:none}
+.logo{width:30px;height:30px;border-radius:9px;background:var(--grad);display:grid;place-items:center;
+  color:#fff;font-family:var(--mono);font-weight:700;font-size:13px;box-shadow:0 6px 20px rgba(109,94,248,.45)}
+.mark{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:2px;
+  background:linear-gradient(100deg,#fff,var(--acc2) 55%,var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+.mark small{font-weight:500;font-size:9.5px;letter-spacing:2.5px;color:var(--faint);
+  display:block;margin-top:2px;background:none;-webkit-text-fill-color:var(--faint)}
+.crumb{font-family:var(--mono);color:var(--faint);font-size:11px;max-width:260px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--stroke);
+  background:var(--panel);border-radius:8px;padding:5px 10px}
+.crumb b{color:var(--dim);font-weight:500}
 .spacer{flex:1}
-.kbd{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--stroke);border-radius:5px;padding:2px 6px;background:var(--panel)}
-#runBtn{cursor:pointer;font-family:var(--mono);font-size:12px;color:var(--ok);
-  border:1px solid rgba(61,220,151,.35);background:rgba(61,220,151,.07);border-radius:7px;padding:5px 10px;transition:.15s}
-#runBtn:hover{background:rgba(61,220,151,.15)}
-#runBtn:disabled{opacity:.35;cursor:not-allowed}
-/* ---------- chat ---------- */
-#chat{flex:1;overflow-y:auto;padding:6px 2px 16px;scroll-behavior:smooth}
-#chat::-webkit-scrollbar{width:8px}
-#chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:8px}
-#chat::-webkit-scrollbar-track{background:transparent}
-.turn{margin:20px 0 6px}
-.turn .who{font-family:var(--mono);font-size:10.5px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
-.turn.user .who{color:var(--accent)}
-.turn .body{line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:14.5px}
-.turn.user .body{color:#c9ccdd;padding:2px 0 4px 14px;border-left:2px solid rgba(77,159,255,.4)}
-.turn.ai .body p{margin:.5em 0}
-.turn.ai .body pre{background:#0b0b12 !important;border:1px solid var(--stroke);border-radius:10px;
-  padding:12px 14px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6}
-.turn.ai .body code{font-family:var(--mono);font-size:.9em}
-.turn.ai .body :not(pre)>code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:5px}
-.turn.ai .body table{border-collapse:collapse;font-size:13px}
-.turn.ai .body th,.turn.ai .body td{border:1px solid var(--stroke);padding:6px 10px}
-/* activity (tool calls) */
-.act{margin:10px 0;font-family:var(--mono);font-size:12px;border:1px solid var(--stroke);
-  border-left:2px solid var(--accent);border-radius:9px;background:rgba(77,159,255,.045);overflow:hidden}
-.act.tool_result{border-left-color:var(--faint)}
-.act .h{padding:7px 12px;cursor:pointer;user-select:none;display:flex;gap:8px;align-items:center;color:#9fb8e0}
-.act .h .cmd{color:var(--dim);font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.act .h .st{color:var(--faint);font-size:10px;letter-spacing:1px}
-.act .b{padding:0 12px 10px;color:#9aa2bd;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;display:none}
-.act.open .b{display:block}
-.act .b::before{content:'⎿';color:var(--faint);font-size:11px}
-.act .arrow{color:var(--faint);transition:.15s}
-.act.open .arrow{transform:rotate(90deg)}
-.expander{font-family:var(--mono);font-size:11px;color:var(--faint);padding:4px 12px 10px;cursor:pointer}
-.expander:hover{color:var(--dim)}
-.cursor{display:inline-block;width:9px;height:1.15em;background:var(--accent);vertical-align:-3px;margin-left:3px;animation:blink 1s steps(2) infinite}
-@keyframes blink{50%{opacity:0}}
-/* ---------- composer ---------- */
-.composer{flex:none;padding:8px 0 0}
-.box{display:flex;gap:10px;align-items:flex-end;background:var(--panel);border:1px solid var(--stroke);
-  border-radius:12px;padding:10px 12px;transition:border-color .18s, box-shadow .18s}
-.box:focus-within{border-color:rgba(124,92,255,.55);box-shadow:0 0 0 3px rgba(124,92,255,.12),0 14px 40px rgba(0,0,0,.4)}
-textarea{flex:1;background:none;border:0;outline:0;color:var(--ink);font-family:var(--sans);font-size:14.5px;resize:none;max-height:180px;line-height:1.55;padding:4px 0}
-textarea::placeholder{color:var(--faint)}
-.send{width:40px;height:40px;flex:none;border:0;border-radius:10px;cursor:pointer;color:#0a0a0f;font-size:17px;font-weight:700;
-  background:linear-gradient(135deg,var(--accent),var(--accent2));transition:transform .12s,filter .2s}
-.send:hover{filter:brightness(1.15)}.send:active{transform:scale(.9)}.send:disabled{opacity:.35;cursor:not-allowed}
-.shortcuts{display:flex;gap:14px;padding:8px 2px 2px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
-.shortcuts a{color:var(--faint);cursor:pointer;text-decoration:none}
-.shortcuts a:hover{color:var(--accent)}
-/* ---------- status bar ---------- */
-.statusbar{flex:none;display:flex;align-items:center;gap:16px;padding:9px 2px 12px;
-  font-family:var(--mono);font-size:11px;color:var(--faint)}
-.statusbar .seg{display:flex;align-items:center;gap:6px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 2.4s infinite}
-.dot.off{background:var(--danger);box-shadow:0 0 8px var(--danger)}
+.pill{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;
+  color:var(--dim);border:1px solid var(--stroke);background:var(--panel);border-radius:999px;padding:5px 12px}
+.pill b{color:var(--ink);font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);animation:pulse 2.4s infinite}
+.dot.off{background:var(--err);box-shadow:0 0 10px var(--err);animation:none}
 @keyframes pulse{50%{opacity:.35}}
+.icon-btn{border:1px solid var(--stroke);background:var(--panel);color:var(--dim);border-radius:10px;
+  width:34px;height:34px;cursor:pointer;font-size:15px;display:grid;place-items:center;transition:.18s}
+.icon-btn:hover{color:var(--ink);border-color:var(--stroke2);background:var(--panel2)}
+/* ---------- chat ---------- */
+#chat{flex:1;overflow-y:auto;padding:4px 2px 18px;scroll-behavior:smooth}
+.turn{margin:24px 0 8px}
+.turn.user{display:flex;justify-content:flex-end}
+.user .bubble{max-width:78%;background:linear-gradient(135deg,rgba(109,94,248,.28),rgba(77,159,255,.16));
+  border:1px solid rgba(157,107,255,.35);border-radius:18px 18px 6px 18px;padding:11px 16px;
+  color:#e7e6ff;white-space:pre-wrap;word-break:break-word;font-size:14.5px}
+.ai .who{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--faint);margin:0 0 8px 2px;text-transform:uppercase}
+.ai .who i{font-style:normal;color:var(--acc2)}
+.ai .body{line-height:1.75;word-break:break-word}
+.ai .body p{margin:.55em 0}
+.ai .body h1,.ai .body h2,.ai .body h3,.ai .body h4{margin:.9em 0 .4em;line-height:1.35;letter-spacing:.2px}
+.ai .body h1{font-size:1.3em}.ai .body h2{font-size:1.18em}.ai .body h3{font-size:1.08em}.ai .body h4{font-size:1em}
+.ai .body ul,.ai .body ol{margin:.5em 0;padding-left:1.5em}
+.ai .body li{margin:.22em 0}
+.ai .body a{color:var(--blue);text-decoration:none;border-bottom:1px solid rgba(77,159,255,.35)}
+.ai .body a:hover{border-bottom-color:var(--blue)}
+.ai .body blockquote{margin:.6em 0;padding:.35em 1em;border-left:3px solid var(--acc2);
+  background:rgba(157,107,255,.07);border-radius:0 10px 10px 0;color:var(--dim)}
+.ai .body hr{border:0;height:1px;background:var(--stroke);margin:1.2em 0}
+.ai .body table{border-collapse:collapse;margin:.6em 0;font-size:13px;width:100%}
+.ai .body th,.ai .body td{border:1px solid var(--stroke);padding:7px 12px;text-align:left}
+.ai .body th{background:rgba(109,94,248,.12);color:#cfc9ff;font-weight:600}
+.ai .body :not(pre)>code{background:rgba(157,107,255,.14);color:#d9c9ff;padding:2px 7px;
+  border-radius:6px;font-family:var(--mono);font-size:.86em}
+.ai .body img{max-width:100%;border-radius:12px;border:1px solid var(--stroke)}
+.ai .body .pre{position:relative;margin:.7em 0;border:1px solid var(--stroke);border-radius:12px;overflow:hidden;background:#08080f}
+.pre .head{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;
+  font-family:var(--mono);font-size:10.5px;color:var(--faint);background:rgba(255,255,255,.03);border-bottom:1px solid var(--stroke)}
+.pre .head span{letter-spacing:1px;text-transform:uppercase}
+.copy{border:1px solid var(--stroke);background:transparent;color:var(--dim);font-family:var(--mono);
+  font-size:10px;padding:3px 10px;border-radius:7px;cursor:pointer;transition:.15s}
+.copy:hover{color:var(--ink);border-color:var(--stroke2);background:var(--panel2)}
+.copy.copied{color:var(--ok);border-color:rgba(61,220,151,.4)}
+.ai .body pre{margin:0;padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.65}
+.tok-k{color:#7fd3ff}.tok-s{color:#a8e6a8}.tok-c{color:#707090;font-style:italic}
+.tok-n{color:#ffb86c}.tok-f{color:#82aaff}
+/* tool cards */
+.tool{margin:10px 0;border:1px solid var(--stroke);border-left:2px solid var(--blue);
+  border-radius:12px;background:rgba(77,159,255,.045);overflow:hidden;font-family:var(--mono);font-size:12px}
+.tool.done{border-left-color:var(--faint)}
+.tool-h{display:flex;align-items:center;gap:9px;padding:8px 13px;cursor:pointer;user-select:none}
+.spin{width:11px;height:11px;border:2px solid rgba(157,107,255,.35);border-top-color:var(--acc2);
+  border-radius:50%;animation:rot .8s linear infinite;flex:none}
+@keyframes rot{to{transform:rotate(360deg)}}
+.tool.done .spin{display:none}
+.tool-name{color:#9fc2ef;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-st{font-size:10px;letter-spacing:1px;color:var(--faint)}
+.tool-st.running{color:var(--warn)}
+.tool-st.ok{color:var(--ok)}
+.tool.done .tool-st.running{display:none}
+.tw{color:var(--faint);transition:.15s}
+.tool.open .tw{transform:rotate(90deg)}
+.tool-b{padding:2px 14px 12px;color:#9aa2bd;white-space:pre-wrap;word-break:break-word;
+  max-height:240px;overflow:auto;display:none;border-top:1px solid transparent}
+.tool.open .tool-b{display:block;padding-top:10px;border-top-color:var(--stroke)}
+.tool.open .tool-b::before{content:'result';display:block;font-size:9.5px;letter-spacing:1.5px;color:var(--faint);margin-bottom:6px}
+.cursor{display:inline-block;width:8px;height:1.15em;background:var(--acc2);vertical-align:-3px;margin-left:3px;animation:blink 1s steps(2) infinite;border-radius:2px}
+@keyframes blink{50%{opacity:0}}
+.err{color:var(--err);margin-top:10px;font-size:13.5px}
+.stamp{color:var(--faint);font-family:var(--mono);font-size:11px;margin-top:10px;letter-spacing:1px}
+/* ---------- empty state ---------- */
+.empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;text-align:center;color:var(--faint)}
+.empty .hero{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:5px;color:var(--dim)}
+.empty .hero i{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.empty .sub{font-size:13px;max-width:480px;color:var(--faint)}
+.chips{display:flex;gap:9px;flex-wrap:wrap;justify-content:center;max-width:640px;margin-top:6px}
+.chip{font-family:var(--mono);font-size:12px;border:1px solid var(--stroke);background:var(--panel);
+  border-radius:10px;padding:9px 14px;color:var(--dim);cursor:pointer;transition:.16s}
+.chip:hover{border-color:var(--acc2);color:var(--ink);background:rgba(157,107,255,.10);
+  transform:translateY(-1px);box-shadow:0 8px 24px rgba(109,94,248,.15)}
+/* ---------- composer ---------- */
+.composer{flex:none;padding:6px 0 8px}
+.box{display:flex;gap:10px;align-items:flex-end;background:var(--panel);
+  border:1px solid var(--stroke);border-radius:var(--radius);padding:10px 12px;
+  transition:border-color .18s, box-shadow .18s, background .18s;
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.box:focus-within{border-color:rgba(157,107,255,.6);box-shadow:0 0 0 4px rgba(109,94,248,.12),0 16px 44px rgba(0,0,0,.45);background:var(--panel2)}
+textarea{flex:1;background:none;border:0;outline:0;color:var(--ink);font-family:var(--sans);
+  font-size:14.5px;resize:none;max-height:180px;line-height:1.55;padding:4px 0}
+textarea::placeholder{color:var(--faint)}
+.send{width:42px;height:42px;flex:none;border:0;border-radius:12px;cursor:pointer;color:#fff;
+  font-size:16px;font-weight:700;background:var(--grad);box-shadow:0 8px 24px rgba(109,94,248,.4);
+  transition:transform .12s, filter .2s, opacity .2s}
+.send:hover{filter:brightness(1.14)}
+.send:active{transform:scale(.9)}
+.send:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+.stop{width:42px;height:42px;flex:none;border:1px solid rgba(255,107,122,.4);border-radius:12px;
+  cursor:pointer;background:rgba(255,107,122,.12);color:var(--err);font-family:var(--mono);
+  font-size:11px;font-weight:700;display:none;transition:.18s}
+.stop:hover{background:rgba(255,107,122,.2)}
+.shortcuts{display:flex;gap:6px;flex-wrap:wrap;padding:9px 2px 2px}
+.shortcuts a{font-family:var(--mono);font-size:11px;color:var(--faint);cursor:pointer;text-decoration:none;
+  border:1px solid transparent;border-radius:7px;padding:3px 9px;transition:.15s}
+.shortcuts a:hover{color:var(--acc2);background:rgba(157,107,255,.08)}
+.hint{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint);align-self:center}
+/* ---------- status bar ---------- */
+.statusbar{flex:none;display:flex;align-items:center;gap:14px;padding:8px 2px 16px;
+  font-family:var(--mono);font-size:11px;color:var(--faint)}
+.statusbar .seg{display:flex;align-items:center;gap:6px;white-space:nowrap}
 .statusbar b{color:var(--dim);font-weight:500}
-/* empty state */
-.empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:var(--faint);text-align:center}
-.empty .big{font-family:var(--mono);font-size:13px;letter-spacing:4px;color:var(--dim)}
-.empty .big i{font-style:normal;color:var(--accent)}
-.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:620px}
-.chip{font-family:var(--mono);font-size:12px;border:1px solid var(--stroke);background:var(--panel);border-radius:8px;padding:8px 12px;color:var(--dim);cursor:pointer;transition:.15s}
-.chip:hover{border-color:var(--accent);color:var(--ink);background:rgba(77,159,255,.08)}
-.err{color:var(--danger);margin-top:6px}
+@media(max-width:640px){
+  .app{padding:0 12px}
+  .user .bubble{max-width:92%}
+  .crumb{display:none}
+  .hint{display:none}
+}
 </style>
 </head>
 <body>
 <div class="app">
   <div class="top">
-    <div class="mark">◈ YOUSINI</div>
-    <div class="crumb">~/<b id="cwd">หน้าเว็บ</b></div>
+    <div class="brand">
+      <div class="logo">Y</div>
+      <div class="mark">YOUSINI<small>CONSOLE v2</small></div>
+    </div>
+    <div class="crumb">~/<b id="cwd">—</b></div>
     <div class="spacer"></div>
-    <span class="kbd">Enter ส่ง</span>
-    <button id="runBtn" title="รันงานให้ agent (เหมือนพิมพ์ /run)">▸ RUN</button>
+    <span class="pill" id="modelPill" title="Model">model <b id="model">—</b></span>
+    <span class="pill" title="Session id">session <b id="sid">—</b></span>
+    <button class="icon-btn" id="newBtn" title="เริ่มแชทใหม่">&#10010;</button>
   </div>
 
-  <div id="chat">
-    <div class="empty" id="empty">
-      <div class="big">YOUSINI <i>CONSOLE</i> v2</div>
-      <p style="font-size:13px;max-width:480px">Agent ที่ทำงานบนเครื่องจริง — โค้ด, เชลล์, git, symbol index, ภาพ, cron</p>
-      <div class="chips">
-        <div class="chip" onclick="quick(this)">/symbols def chat_turn</div>
-        <div class="chip" onclick="quick(this)">/git log 5</div>
-        <div class="chip" onclick="quick(this)">สร้างเว็บ To-Do ด้วย HTML/JS</div>
-        <div class="chip" onclick="quick(this)">อธิบายโครงสร้างโปรเจกต์นี้ (ใช้ symbols)</div>
-      </div>
-    </div>
-  </div>
+  <div id="chat"></div>
 
   <div class="composer">
     <div class="box">
-      <textarea id="input" rows="1" placeholder="สั่งงาน Yousini…  ภาพ: พิมพ์ [img:ทางไปไฟล์.png] คำถาม"></textarea>
-      <button class="send" id="send" title="ส่ง">➤</button>
+      <textarea id="input" rows="1" placeholder="สั่งงาน Yousini...  เพิ่มรูป: [img:path.png] คำถาม  ·  Enter ส่ง  ·  Shift+Enter ขึ้นบรรทัดใหม่"></textarea>
+      <button class="stop" id="stopBtn" title="หยุด">STOP</button>
+      <button class="send" id="send" title="ส่ง (Enter)">&#10148;</button>
     </div>
     <div class="shortcuts">
-      <a onclick="quick(this)">/symbols list</a><a onclick="quick(this)">/git status</a>
-      <a onclick="quick(this)">/cron</a><a onclick="quick(this)">/search session</a>
+      <a onclick="quick('/git status')">/git status</a>
+      <a onclick="quick('/symbols list')">/symbols list</a>
+      <a onclick="quick('/cron')">/cron</a>
+      <a onclick="quick('/search session')">/search</a>
+      <a onclick="quick('สร้างเว็บ To-Do ด้วย HTML/CSS/JS')">สร้าง To-Do web</a>
+      <a onclick="quick('อธิบายโครงสร้างโปรเจกต์นี้')">อธิบายโปรเจกต์</a>
+      <span class="hint">Enter ส่ง  ·  Shift+Enter ขึ้นบรรทัดใหม่</span>
     </div>
   </div>
 
   <div class="statusbar">
-      <div class="seg"><span class="dot" id="dot"></span><span id="status">เชื่อมต่อ…</span></div>
-      <div class="seg">model <b id="model">—</b></div>
-      <div class="seg">session <b id="sid">—</b></div>
-      <div class="seg" id="usage" style="margin-left:auto">tok —</div>
-    </div>
+    <div class="seg"><span class="dot" id="dot"></span><span id="status">กำลังเชื่อมต่อ...</span></div>
+    <div class="seg">cwd <b id="cwd2">—</b></div>
+    <div class="seg" id="usage" style="margin-left:auto">tok —</div>
   </div>
-  <script>
-  const chat=document.getElementById('chat'), input=document.getElementById('input'),
-        send=document.getElementById('send'), empty=document.getElementById('empty');
-  let TOKEN=localStorage.getItem('yousini_token')||'';
-  const SID=localStorage.getItem('yousini_sid')||(Math.random().toString(36).slice(2)+Date.now().toString(36));
-  localStorage.setItem('yousini_sid',SID);
-  document.getElementById('sid').textContent=SID.slice(0,6);
-  let busy=false, turnAI=null, actStack=[], usage={};
+</div>
 
-  function setStatus(ok,msg,model){
-    document.getElementById('dot').className='dot'+(ok?'':' off');
-    document.getElementById('status').textContent=msg;
-    if(model)document.getElementById('model').textContent=model;}
-  fetch('info').then(r=>r.json()).then(d=>{setStatus(true,'ออนไลน์',d.model);
-    if(d.cwd)document.getElementById('cwd').textContent=d.cwd;})
-    .catch(()=>setStatus(false,'ออฟไลน์'));
+<script>
+/* ---------- util ---------- */
+const chat=document.getElementById('chat'), input=document.getElementById('input'),
+      send=document.getElementById('send'), stopBtn=document.getElementById('stopBtn'),
+      newBtn=document.getElementById('newBtn');
+const $=id=>document.getElementById(id);
+function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
-  function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-  function md(s){try{return marked.parse(s)}catch(e){return esc(s)}}
+let TOKEN=localStorage.getItem('yousini_token')||'';
+let SID=localStorage.getItem('yousini_sid')||gen();
+localStorage.setItem('yousini_sid',SID);
+$('sid').textContent=SID.slice(0,6);
+let busy=false, turnAI=null, lastTool=null, abortCtl=null;
+let usage={prompt_tokens:0,completion_tokens:0};
+function gen(){return Math.random().toString(36).slice(2)+Date.now().toString(36)}
 
-  input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px'});
-  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go()}});
-  send.onclick=go; document.getElementById('runBtn').onclick=()=>go();
-  function quick(el){input.value=el.textContent.trim();go()}
+/* ---------- syntax highlight ---------- */
+const KW={
+  python:'def class return if elif else for while in not and or import from as with try except finally lambda yield pass break continue None True False self global nonlocal raise assert is del async await',
+  javascript:'const let var function return if else for while do switch case break continue new class extends super this typeof instanceof in of async await try catch finally throw null undefined true false import export default',
+  typescript:'const let var function return if else for while do switch case break continue new class extends super interface type this typeof instanceof in of async await try catch finally throw null undefined true false import export default readonly',
+  shell:'echo if then elif else fi for while do done case esac function local export set unset cd pwd ls cat grep sed awk printf read return exit true false source declare',
+  bash:'echo if then elif else fi for while do done case esac function local export set unset cd pwd ls cat grep sed awk printf read return exit true false source declare',
+  json:'true false null',
+  yaml:'true false null yes no on off',
+  sql:'select from where insert into values update set delete join left right inner outer on group by order having limit as and or not null is in exists create table index view drop alter primary key foreign references asc desc',
+  java:'public private protected static final class interface extends implements new return if else for while do switch case break continue void int long double float boolean try catch finally throw throws package import this super null true false',
+  go:'package import func return if else for range switch case break continue struct interface map chan go defer type var const nil true false',
+  rust:'fn let mut pub struct enum impl trait use mod match if else for while loop return break continue move ref const static async await true false',
+  html:'html head body div span p a img ul ol li table tr td th form input button select option class id style script link meta title br hr section article nav header footer main',
+  css:'color background border margin padding display position flex grid width height font size align justify content box radius opacity transform transition z-index overflow cursor pointer relative absolute fixed sticky',
+  markdown:'# ## ### #### title code block syntax highlight',
+};
+function hl(code,lang){
+  lang=(lang||'').toLowerCase().split(' ')[0];
+  if(lang==='py')lang='python';
+  const kws=(KW[lang]||'if else for while return function const let var new class import from export this true false null undefined def in and or is not try except finally break continue').split(' ');
+  kws.sort((a,b)=>b.length-a.length);
+  const s=[],c=[];
+  let out=esc(code);
+  out=out.replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`[^`\n]*`)/g,m=>{s.push(m);return '\x01s'+(s.length-1)+'\x02'});
+  out=out.replace(/(\/\/[^\n]*|#[^\n]*|<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/)/g,m=>{c.push(m);return '\x01c'+(c.length-1)+'\x02'});
+  out=out.replace(/\b\d+(?:\.\d+)?\b/g,'<span class="tok-n">$&</span>');
+  for(const k of kws){out=out.replace(new RegExp('\\b('+k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')\\b','g'),'<span class="tok-k">$1</span>')}
+  out=out.replace(/([A-Za-z_][A-Za-z0-9_]*)(?=\s*\()/g,'<span class="tok-f">$1</span>');
+  out=out.replace(/\x01s(\d+)\x02/g,(_,i)=>'<span class="tok-s">'+s[+i]+'</span>');
+  out=out.replace(/\x01c(\d+)\x02/g,(_,i)=>'<span class="tok-c">'+c[+i]+'</span>');
+  return out;
+}
 
-  function addTurn(role){
-    if(empty)empty.remove();
-    const t=document.createElement('div');t.className='turn '+role;
-    t.innerHTML=`<div class="who">${role==='user'?'YOU · คุณ':'YOUSINI · agent'}</div><div class="body"></div>`;
-    chat.appendChild(t);chat.scrollTop=chat.scrollHeight;return t;}
-
-  function addAct(kind,name,args,result){
-    const a=document.createElement('div');a.className='act '+(kind==='result'?'tool_result':'tool');
-    a.innerHTML=`<div class="h"><span class="arrow">▸</span><span class="cmd">${kind==='result'?'⎿ ผลลัพธ์':esc(name)}</span><span class="st">${kind==='result'?'':'tool'}</span></div><div class="b"></div>`;
-    a.querySelector('.h').onclick=()=>a.classList.toggle('open');
-    const b=a.querySelector('.b');
-    if(kind==='result')b.textContent=result; else b.textContent=args;
-    if(turnAI)turnAI.appendChild(a);
-    chat.scrollTop=chat.scrollHeight;return a;}
-
-  async function go(){
-    const text=input.value.trim(); if(!text||busy)return;
-    addTurn('user').querySelector('.body').textContent=text;
-    input.value='';input.style.height='auto';
-    busy=true;send.disabled=true;document.getElementById('runBtn').disabled=true;
-    turnAI=addTurn('ai'); const bubble=turnAI.querySelector('.body');
-    const cur=document.createElement('span');cur.className='cursor';bubble.appendChild(cur);
-    let acc='',exp=null;
-    try{
-      const res=await fetch('api/chat',{method:'POST',headers:{'Content-Type':'application/json',
-        'X-Yousini-Token':TOKEN},body:JSON.stringify({message:text,session:SID})});
-      if(res.status===401){const t=prompt('เซิร์ฟเวอร์ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t);busy=false;send.disabled=false;document.getElementById('runBtn').disabled=false;turnAI.remove();return go();}}
-      const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
-      while(true){const {value,done}=await reader.read();if(done)break;
-        buf+=dec.decode(value,{stream:true});const parts=buf.split('\n\n');buf=parts.pop();
-        for(const p of parts){const line=p.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;
-          let ev;try{ev=JSON.parse(line.slice(5))}catch(e){continue}
-          if(ev.type==='token'){acc+=ev.text;cur.remove();bubble.innerHTML=md(acc);bubble.appendChild(cur);}
-          else if(ev.type==='tool'){cur.remove();addAct('tool',ev.name,ev.args||'');bubble.appendChild(cur);}
-          else if(ev.type==='tool_result'){addAct('result',ev.name||'', '', ev.result||'');}
-          else if(ev.type==='final'){acc=ev.text;bubble.innerHTML=md(acc);
-            if(ev.usage){usage=ev.usage;document.getElementById('usage').textContent='in '+usage.prompt_tokens+'/out '+usage.completion_tokens;}}
-          else if(ev.type==='error'){bubble.innerHTML+=`<div class="err">⚠ ${esc(ev.text)}</div>`;}
-          const acts=turnAI.querySelectorAll('.act'); if(acts.length>4&&!exp){
-            exp=document.createElement('div');exp.className='expander';exp.textContent='⋯ ดู tool calls ทั้งหมด ('+acts.length+')';
-            exp.onclick=()=>{turnAI.querySelectorAll('.act').forEach(a=>a.style.display='');exp.remove()};
-            turnAI.appendChild(exp); acts.forEach(a=>{if(a.style.display==='')a.style.display='none';});
-            exp.style.display='block';}
-          chat.scrollTop=chat.scrollHeight;}
-      }
-    }catch(e){bubble.innerHTML+=`<div class="err">⚠ การเชื่อมต่อขัดข้อง: ${esc(e.message)}</div>`;setStatus(false,'ออฟไลน์');}
-    cur.remove();turnAI.querySelectorAll('pre code').forEach(el=>{try{hljs.highlightElement(el)}catch(e){}});
-    busy=false;send.disabled=false;document.getElementById('runBtn').disabled=false;input.focus();
+/* ---------- markdown ---------- */
+function inline(s){
+  return s
+    .replace(/~~([^~]+)~~/g,'<s>$1</s>')
+    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<i>$2</i>')
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,'<img alt="$1" src="$2" loading="lazy">')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function md(src){
+  const code=[];
+  let text=String(src);
+  text=text.replace(/```([\w+-]*)\n?([\s\S]*?)```/g,(m,lang,body)=>{
+    const i=code.length;
+    code.push('<div class="pre"><div class="head"><span>'+esc(lang||'code')+'</span><button class="copy" data-i="'+i+'">Copy</button></div><pre><code class="lang-'+(lang||'text')+'">'+hl(body,lang)+'</code></pre></div>');
+    return '\x02CODE'+i+'\x02';
+  });
+  text=esc(text);
+  text=text.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  const lines=text.split('\n');
+  let html='',i=0;
+  while(i<lines.length){
+    const line=lines[i], t=line.trim();
+    if(!t){i++;continue}
+    const codeM=t.match(/^\x02CODE(\d+)\x02$/);
+    if(codeM){html+=code[+codeM[1]];i++;continue}
+    if(t==='---'||t==='***'){html+='<hr>';i++;continue}
+    const h=t.match(/^(#{1,6})\s+(.*)$/);
+    if(h){html+='<h'+h[1].length+'>'+inline(h[2])+'</h'+h[1].length+'>';i++;continue}
+    if(t.startsWith('> ')){
+      const q=[];while(i<lines.length&&lines[i].trim().startsWith('> ')){q.push(inline(lines[i].trim().slice(2)));i++}
+      html+='<blockquote>'+q.join('<br>')+'</blockquote>';continue;
+    }
+    if(/^\|.*\|$/.test(t)&&i+1<lines.length&&/^\|[\s:|-]+\|$/.test(lines[i+1].trim())){
+      const cells=r=>r.trim().split('|').slice(1,-1).map(x=>inline(x.trim()));
+      html+='<table><thead><tr>'+cells(t).map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody>';
+      i+=2;
+      while(i<lines.length&&/^\|.*\|$/.test(lines[i].trim())){html+='<tr>'+cells(lines[i]).map(x=>'<td>'+x+'</td>').join('')+'</tr>';i++}
+      html+='</tbody></table>';continue;
+    }
+    const ul=t.match(/^[-*+]\s+(.*)$/);
+    if(ul){html+='<ul>';while(i<lines.length){const m=lines[i].trim().match(/^[-*+]\s+(.*)$/);if(!m)break;html+='<li>'+inline(m[1])+'</li>';i++}html+='</ul>';continue}
+    const ol=t.match(/^\d+[.)]\s+(.*)$/);
+    if(ol){html+='<ol>';while(i<lines.length){const m=lines[i].trim().match(/^\d+[.)]\s+(.*)$/);if(!m)break;html+='<li>'+inline(m[1])+'</li>';i++}html+='</ol>';continue}
+    const para=[t];i++;
+    while(i<lines.length){
+      const tt=lines[i].trim();
+      if(!tt)break;
+      if(/^(#{1,6})\s/.test(tt)||tt==='---'||tt==='***'||/^\|.*\|$/.test(tt)||/^[-*+]\s/.test(tt)||/^\d+[.)]\s/.test(tt)||/^\x02CODE\d+\x02$/.test(tt)||tt.startsWith('> '))break;
+      para.push(tt);i++;
+    }
+    html+='<p>'+para.map(x=>inline(x)).join('<br>')+'</p>';
   }
-  </script>
-  </body>
-  </html>
+  return html;
+}
+
+/* ---------- chat rendering ---------- */
+function addUser(text){
+  const t=document.createElement('div');t.className='turn user';
+  t.innerHTML='<div class="bubble">'+esc(text)+'</div>';
+  chat.appendChild(t);stick();
+}
+function addAI(){
+  const t=document.createElement('div');t.className='turn ai';
+  t.innerHTML='<div class="who"><i>YOUSINI</i> · agent</div><div class="body"></div>';
+  chat.appendChild(t);stick();return t;
+}
+function addTool(name,args){
+  const c=document.createElement('div');c.className='tool';
+  c.innerHTML='<div class="tool-h"><span class="spin"></span><span class="tool-name">'+esc(name)+'</span><span class="tool-st running">RUNNING</span><span class="tw">&#9656;</span></div><div class="tool-b">'+esc(args)+'</div>';
+  c.querySelector('.tool-h').onclick=()=>c.classList.toggle('open');
+  turnAI.appendChild(c);lastTool=c;stick();return c;
+}
+function finishTool(name,result){
+  if(lastTool){
+    lastTool.classList.add('done');
+    const st=lastTool.querySelector('.tool-st');st.textContent='DONE';st.classList.add('ok');
+    const b=lastTool.querySelector('.tool-b');
+    b.textContent=(b.textContent?b.textContent+'\n\n':'\n')+result;
+  }
+  lastTool=null;stick();
+}
+function emptyState(){
+  const e=document.createElement('div');e.className='empty';
+  e.innerHTML='<div class="hero">YOUSINI <i>CONSOLE</i></div>'+
+    '<div class="sub">Coding agent ระดับผู้ช่วยบนเครื่องจริง — เขียนโค้ด, รัน shell, จัดการ git, ค้นหาเว็บ, และทำงานอัตโนมัติ</div>'+
+    '<div class="chips">'+
+    '<div class="chip" onclick="quick(\'สร้างเว็บ To-Do ด้วย HTML/CSS/JS\')">สร้างเว็บ To-Do</div>'+
+    '<div class="chip" onclick="quick(\'อธิบายโครงสร้างโปรเจกต์นี้\')">อธิบายโปรเจกต์</div>'+
+    '<div class="chip" onclick="quick(\'/symbols list\')">/symbols list</div>'+
+    '<div class="chip" onclick="quick(\'/git log 5\')">/git log 5</div>'+
+    '</div>';
+  return e;
+}
+function resetChat(){
+  SID=gen();localStorage.setItem('yousini_sid',SID);$('sid').textContent=SID.slice(0,6);
+  chat.innerHTML='';chat.appendChild(emptyState());
+}
+
+/* ---------- scroll ---------- */
+function stick(){
+  const near=chat.scrollHeight-chat.scrollTop-chat.clientHeight<90;
+  if(near||busy)chat.scrollTop=chat.scrollHeight;
+}
+
+/* ---------- send flow ---------- */
+function setBusy(b){
+  busy=b;send.disabled=b;stopBtn.style.display=b?'block':'none';input.disabled=b;
+}
+function quick(el){input.value=(typeof el==='string'?el:el.textContent).trim();go()}
+
+async function go(){
+  const text=input.value.trim();
+  if(!text||busy)return;
+  addUser(text);
+  input.value='';autoResize();input.focus();
+  setBusy(true);
+  turnAI=addAI();
+  const bubble=turnAI.querySelector('.body');
+  const cur=document.createElement('span');cur.className='cursor';bubble.appendChild(cur);
+  let acc='';
+  const ctl=new AbortController();abortCtl=ctl;
+  try{
+    const res=await fetch('api/chat',{method:'POST',
+      headers:{'Content-Type':'application/json','X-Yousini-Token':TOKEN},
+      body:JSON.stringify({message:text,session:SID}),signal:ctl.signal});
+    if(res.status===401){
+      const t=prompt('เซิร์ฟเวอร์กำหนดให้ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t);}
+      cur.remove();turnAI.remove();setBusy(false);abortCtl=null;return go();
+    }
+    if(!res.ok||!res.body)throw new Error('HTTP '+res.status);
+    const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+    while(true){
+      const {value,done}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const parts=buf.split('\n\n');buf=parts.pop();
+      for(const p of parts){
+        const line=p.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;
+        let ev;try{ev=JSON.parse(line.slice(5))}catch(e){continue}
+        if(ev.type==='token'){acc+=ev.text;cur.remove();bubble.innerHTML=md(acc);bubble.appendChild(cur);stick()}
+        else if(ev.type==='tool'){cur.remove();addTool(ev.name,ev.args||'');bubble.appendChild(cur);stick()}
+        else if(ev.type==='tool_result'){finishTool(ev.name||'',ev.result||'')}
+        else if(ev.type==='final'){
+          acc=ev.text||acc;cur.remove();bubble.innerHTML=md(acc);
+          if(ev.usage){usage=ev.usage;$('usage').textContent='in '+usage.prompt_tokens+' / out '+usage.completion_tokens}
+        }
+        else if(ev.type==='error'){bubble.innerHTML+='<div class="err">'+esc(ev.text)+'</div>'}
+        stick();
+      }
+    }
+  }catch(e){
+    if(e.name==='AbortError'){bubble.innerHTML+='<div class="stamp">หยุดการทำงานแล้ว</div>'}
+    else{bubble.innerHTML+='<div class="err">การเชื่อมต่อขัดข้อง: '+esc(e.message)+'</div>';setStatus(false,'ออฟไลน์')}
+  }finally{
+    cur.remove();setBusy(false);abortCtl=null;input.focus();
+  }
+}
+
+/* ---------- wiring ---------- */
+function autoResize(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px'}
+input.addEventListener('input',autoResize);
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go()}});
+send.onclick=go;
+stopBtn.onclick=()=>{if(abortCtl)abortCtl.abort()};
+newBtn.onclick=resetChat;
+
+function setStatus(ok,msg,model){
+  $('dot').className='dot'+(ok?'':' off');
+  $('status').textContent=msg;
+  if(model)$('model').textContent=model;
+}
+fetch('info').then(r=>r.json()).then(d=>{
+  setStatus(true,'ออนไลน์',d.model);
+  if(d.cwd){$('cwd').textContent=d.cwd;$('cwd2').textContent=d.cwd}
+}).catch(()=>setStatus(false,'ออฟไลน์'));
+
+chat.addEventListener('click',e=>{
+  const cp=e.target.closest('.copy');
+  if(cp){
+    const pre=cp.closest('.pre');if(!pre)return;
+    const text=pre.querySelector('code').innerText;
+    (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
+      .then(()=>{cp.textContent='Copied';cp.classList.add('copied');setTimeout(()=>{cp.textContent='Copy';cp.classList.remove('copied')},1400)})
+      .catch(()=>{cp.textContent='Copy'});
+  }
+});
+
+chat.appendChild(emptyState());
+input.focus();
+</script>
+</body>
+</html>

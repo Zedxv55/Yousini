@@ -28,6 +28,7 @@ import json
 import re
 import shutil
 import atexit
+import threading
 import subprocess
 import difflib
 import urllib.request
@@ -1863,42 +1864,60 @@ def chat_turn(agent: Agent, user_text: str):
         content = []
         tool_calls = []
 
-        def render():
-            # กำลังคิด = เทา · คำตอบ (ระหว่างสตรีม) = Markdown ปกติ
-            if not content:
-                return _think("กำลังคิด…")
-            return Markdown("".join(content))
+        # spinner ธรรมดา (ไม่ใช้ rich.Live — กันเฟรมซ้ำ/จอเลอะบน Windows conhost)
+        stop_spin = threading.Event()
+        spinner = None
+        if sys.stdout.isatty():
+            _frames = ["⠿", "⠸", "⠼", "⠴", "⠦", "⠇"]
+
+            def _spin():
+                i = 0
+                while not stop_spin.is_set():
+                    sys.stdout.write("\r" + _frames[i % len(_frames)] + " กำลังคิด…")
+                    sys.stdout.flush()
+                    i += 1
+                    stop_spin.wait(0.1)
+
+            spinner = threading.Thread(target=_spin, daemon=True)
+            spinner.start()
+
+        def _stop_spinner():
+            if spinner is not None:
+                stop_spin.set()
+                spinner.join(timeout=0.5)
+                sys.stdout.write("\r" + " " * 32 + "\r")
+                sys.stdout.flush()
 
         try:
-            with Live(render(), console=console, refresh_per_second=12) as live:
-                for chunk in stream:
-                    u = getattr(chunk, "usage", None)
-                    if u is not None:
-                        agent._add_usage(u)
-                    if not chunk.choices:
-                        continue
-                    d = chunk.choices[0].delta
-                    if d.content:
-                        content.append(d.content)
-                        live.update(render())
-                    if d.tool_calls:
-                        for tc in d.tool_calls:
-                            i = tc.index or 0
-                            while len(tool_calls) <= i:
-                                tool_calls.append({"id": "", "name": "", "args": ""})
-                            if tc.id:
-                                tool_calls[i]["id"] = tc.id
-                            if tc.function and tc.function.name:
-                                tool_calls[i]["name"] += tc.function.name
-                            if tc.function and tc.function.arguments:
-                                tool_calls[i]["args"] += tc.function.arguments
+            for chunk in stream:
+                u = getattr(chunk, "usage", None)
+                if u is not None:
+                    agent._add_usage(u)
+                if not chunk.choices:
+                    continue
+                d = chunk.choices[0].delta
+                if d.content:
+                    content.append(d.content)
+                if d.tool_calls:
+                    for tc in d.tool_calls:
+                        i = tc.index or 0
+                        while len(tool_calls) <= i:
+                            tool_calls.append({"id": "", "name": "", "args": ""})
+                        if tc.id:
+                            tool_calls[i]["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            tool_calls[i]["name"] += tc.function.name
+                        if tc.function and tc.function.arguments:
+                            tool_calls[i]["args"] += tc.function.arguments
         except BadRequestError as e:
+            _stop_spinner()
             if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
                 attempts += 1
                 agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
                 continue
             return _fallback_turn(agent, e)
         except Exception as e:
+            _stop_spinner()
             if _is_tool_validation_err(e) and attempts < MAX_ATTEMPTS:
                 attempts += 1
                 agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
@@ -1907,6 +1926,9 @@ def chat_turn(agent: Agent, user_text: str):
 
         if any(t.get("name") for t in tool_calls):
             tool_seen = True
+            _stop_spinner()
+            if "".join(content).strip():
+                console.print(Markdown("".join(content)))
             if not agent.quiet_mode:
                 console.print(_think("เตรียมเครื่องมือ…"))
             asst = {"role": "assistant", "content": "".join(content)}
@@ -1927,6 +1949,7 @@ def chat_turn(agent: Agent, user_text: str):
                 _exec_tool(agent, t["name"], args, t["id"])
             continue
 
+        _stop_spinner()
         ans = "".join(content)
         agent.messages.append({"role": "assistant", "content": ans})
         # คำตอบเน้นสี (แยกจากช่วง "กำลังคิด" ที่เป็นสีเทา)
@@ -2596,6 +2619,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                 self._send(200, web_ui, "text/html; charset=utf-8")
             elif path == "/info":
                 self._send(200, json.dumps({"model": MODEL, "name": "Yousini",
+                           "version": "2.1.0", "cwd": str(Path.cwd()),
                            "safe": safe, "auth": bool(token)}),
                            "application/json; charset=utf-8")
             elif path == "/health":
@@ -2641,12 +2665,17 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
+            self.send_header("Transfer-Encoding", "chunked")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
+            def _chunk(data: bytes) -> bytes:
+                return ("%x\r\n" % len(data)).encode("ascii") + data + b"\r\n"
+
             def emit(ev):
-                self.wfile.write(("data: " + json.dumps(ev, ensure_ascii=False)
-                                  + "\n\n").encode("utf-8"))
+                data = ("data: " + json.dumps(ev, ensure_ascii=False)
+                        + "\n\n").encode("utf-8")
+                self.wfile.write(_chunk(data))
                 self.wfile.flush()
 
             console.print(Text(f"↯ [{sid[:6]}] {message}", style="cyan"))
@@ -2662,6 +2691,11 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                         emit({"type": "error", "text": str(e)})
                     except Exception:
                         pass
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
 
     class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
