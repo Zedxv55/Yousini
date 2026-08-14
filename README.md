@@ -169,7 +169,7 @@ Copy `.env.example` to `.env` and fill in your provider details:
 
 | Variable | Description / รายละเอียด | Default |
 | --- | --- | --- |
-| `YOUSINI_API_KEY` | API key of your provider (required) | - |
+| `YOUSINI_API_KEY` | API key of your provider (required). Aliases: `MISTRAL_API_KEY`, `GROQ_API_KEY`, `ZELAX_API_KEY` | - |
 | `YOUSINI_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
 | `YOUSINI_MODEL` | Model name | `openai/gpt-oss-120b` |
 | `AUTO_RUN` | `1` = run shell commands without confirmation | `0` |

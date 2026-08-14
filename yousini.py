@@ -44,18 +44,20 @@ except ImportError:
 
 # ---- โหลด .env เอง (ไม่พึ่งพา python-dotenv) ----
 def _load_env(path=".env"):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip().strip('"').strip("'")
-                if k and k not in os.environ:
-                    os.environ[k] = v
-    except FileNotFoundError:
-        pass
+    bases = [os.getcwd(), Path(__file__).resolve().parent, Path.home()]
+    for base in dict.fromkeys(str(Path(b)) for b in bases):
+        try:
+            with open(str(Path(base) / path), "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except FileNotFoundError:
+            continue
 
 _load_env()
 
@@ -140,7 +142,7 @@ def _status_footer(agent: "Agent"):
 # ---- Config: รองรับทุก OpenAI-compatible API ----
 # อ่าน YOUSINI_* ก่อน ถ้าไม่มีตกไปใช้ ZELAX_* แล้ว GROQ_* (เข้ากันได้กับของเดิม)
 API_KEY = (os.getenv("YOUSINI_API_KEY") or os.getenv("ZELAX_API_KEY")
-           or os.getenv("GROQ_API_KEY", ""))
+           or os.getenv("GROQ_API_KEY") or os.getenv("MISTRAL_API_KEY", ""))
 BASE_URL = (os.getenv("YOUSINI_BASE_URL") or os.getenv("ZELAX_BASE_URL")
             or os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"))
 MODEL = (os.getenv("YOUSINI_MODEL") or os.getenv("ZELAX_MODEL")
