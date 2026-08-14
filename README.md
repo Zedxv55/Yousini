@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.7.0 | MIT | Python 3.10+ | English / Thai |
+| 3.8.0 | MIT | Python 3.10+ | English / Thai |
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
@@ -81,6 +81,15 @@ Key capabilities / ความสามารถหลัก:
 | Code intelligence | tree-sitter symbol index, go-to-definition and references |
 | Git awareness | `git` tool and `/git` command with recent commit context injection |
 | Vision | Image input via `[img:path.png]` or `/img` |
+| Git PR flow | `yousini pr` — commit → branch → push → open PR in one command |
+| Scaffolding | `yousini scaffold` — instant python-cli / python-pkg / web-static projects |
+| Dev check | `yousini dev` — git status, syntax, pytest, lint in one report |
+| Plugins | `yousini plugin` — load tool/REPL/CLI extensions without touching the core |
+| Session export/import | `yousini session export|import` — backup or move sessions as JSON/Markdown |
+| Self-update | `yousini update` — check & pull the latest version from GitHub |
+| Usage reports | `yousini usage report` — daily/weekly/monthly token & tool summaries |
+| Feature flags | `/flag` / `yousini config` — toggle capabilities in `config.json` |
+| Workflow templates | `yousini workflow` — reusable step sequences (release, weekly_report, code_review) |
 
 ---
 
@@ -628,6 +637,71 @@ yousini dev lint         # ruff/flake8
 ```
 
 ในแชท: `/dev [all|status|compile|test|lint]`. Agent ใช้ tool `dev_check` เพื่อยืนยันว่างานผ่านก่อนสรุป (เหมาะกับ TDD/หลัง refactor).
+
+### Plugin system — ส่วนขยาย tool/คำสั่ง
+
+โหลดส่วนขยายจากโฟลเดอร์ `~/.yousini/plugins/<ชื่อ>/` โดยไม่ต้องแก้แกน — plugin มี `plugin.py` (เปิดด้วย `plugin.json` ได้):
+
+```bash
+yousini plugin list                 # แสดง plugin ที่โหลดอยู่
+yousini plugin install <path>       # คัดลอกโฟลเดอร์ plugin ลง plugins/
+yousini plugin rm <name>            # ลบ plugin
+```
+
+ในแชท: `/plugins`. Plugin ลงทะเบียนได้ 4 อย่าง: `TOOLS` + `impl_<tool>` (เครื่องมือของ agent), `REPL_COMMANDS` + `repl_<cmd>` (คำสั่ง `/`), `CLI_COMMANDS` + `cli_<cmd>` (คำสั่ง CLI). ปิดได้ด้วย `/flag plugin_system off`.
+
+### Export/Import session — สำรอง/ย้ายเครื่อง
+
+```bash
+yousini session export demo --out sess.json     # JSON (เต็ม) — ค่าเริ่มต้น ~/.yousini/exports/
+yousini session export demo --md                # Markdown (อ่านง่าย)
+yousini session import sess.json --name demo2   # นำกลับมาใช้/ค้นหาได้
+```
+
+ในแชท: `/export <session> [--md]`, `/import <ไฟล์>`. Agent ใช้ tool `session_export`/`session_import`.
+
+### Self-update — อัปเดตจาก GitHub
+
+```bash
+yousini update check        # เทียบเวอร์ชันปัจจุบันกับ pyproject.toml บน main
+yousini update              # git fetch + reset --hard origin/main (ต้องรันจาก repo Yousini)
+```
+
+ในแชท: `/update [check]`. Agent ใช้ tool `check_update`.
+
+### Usage report อัตโนมัติ
+
+```bash
+yousini usage report            # รายงานรายสัปดาห์ (tokens/turns/tools + ตารางวัน)
+yousini usage report daily      # หรือ monthly
+yousini usage                   # สถิติย่อแบบเดิม
+```
+
+ในแชท: `/usage report [daily|weekly|monthly]` — รายงานบันทึกเป็น Markdown ใน `~/.yousini/reports/`.
+
+### Feature flags / config — เปิด-ปิดความสามารถ
+
+```bash
+yousini config flag list                    # สถานะ flags ทั้งหมด
+yousini config flag usage_report off        # ปิด feature (plugin_system, session_io, ...)
+yousini config get theme                    # อ่านค่าจาก config.json
+yousini config set theme nord               # เขียนค่า (แปลง true/false/ตัวเลขอัตโนมัติ)
+```
+
+ในแชท: `/flag [list|<ชื่อ> [on|off]]`, `/config ...`. Agent ใช้ tool `config`.
+
+### Workflow templates — เทมเพลตงานอัตโนมัติ
+
+ชุดขั้นตอน (tool/prompt) รันซ้ำได้ — built-in: `release` (ตรวจ→test→bump→PR), `weekly_report`, `code_review`:
+
+```bash
+yousini workflow list
+yousini workflow show release
+yousini workflow run release
+yousini workflow save myflow '[{"tool":"git","args":{"action":"status"}}]'
+```
+
+ในแชท: `/workflow list|run|show`. Agent ใช้ tool `workflow_run`.
 
 ---
 

@@ -226,6 +226,82 @@ def stats() -> dict:
     }
 
 
+def report(period: str = "weekly", fmt: str = "text") -> str:
+    """สร้างรายงานการใช้งาน (daily|weekly|monthly) และบันทึกลง reports/ คืนข้อความ"""
+    with _LOCK:
+        d = _load()
+    if not d.get("opt_in"):
+        return ("ปิดใช้งาน — สั่ง /usage on เพื่อเริ่มเก็บสถิติ (เก็บเฉพาะในเครื่อง ไม่ส่งออก) "
+                "แล้วจึงสร้างรายงานได้")
+    period = (period or "weekly").lower()
+    if period not in ("daily", "weekly", "monthly"):
+        return "period ต้องเป็น daily|weekly|monthly"
+    days = d.get("days", {})
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    if period == "daily":
+        keep = now.strftime("%Y-%m-%d")
+        title = "รายงานรายวัน"
+    elif period == "monthly":
+        keep = now.strftime("%Y-%m")
+        title = "รายงานรายเดือน"
+    else:
+        start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        keep = ("__range__", start)
+        title = "รายงานรายสัปดาห์"
+
+    sel = {}
+    for date, x in days.items():
+        if period == "monthly":
+            if date.startswith(keep):
+                sel[date] = x
+        elif period == "weekly":
+            if date >= keep[1]:
+                sel[date] = x
+        elif date == keep:
+            sel[date] = x
+
+    tot_p = sum(int(x.get("prompt", 0)) for x in sel.values())
+    tot_c = sum(int(x.get("completion", 0)) for x in sel.values())
+    tot_turns = sum(int(x.get("turns", 0)) for x in sel.values())
+    tools = {}
+    for x in sel.values():
+        for k, v in (x.get("tools") or {}).items():
+            tools[k] = tools.get(k, 0) + int(v)
+    active = [dt for dt, x in sorted(sel.items()) if int(x.get("turns", 0)) or int(x.get("prompt", 0))]
+    days_str = str(len(active)) if active else "0"
+
+    lines = [
+        f"# {title} ({now.strftime('%Y-%m-%d')})",
+        "",
+        f"วันที่มีกิจกรรม: {days_str} | turns: {tot_turns:,} | tokens: {tot_p + tot_c:,} "
+        f"(in {tot_p:,} / out {tot_c:,})",
+    ]
+    if tools:
+        lines.append("")
+        lines.append("เครื่องมือที่ใช้มากสุด:")
+        for k, v in sorted(tools.items(), key=lambda kv: -kv[1])[:10]:
+            lines.append(f"  - {k:<16}: {v} ครั้ง")
+    lines.append("")
+    if sel:
+        lines.append("| วันที่ | turns | tokens |")
+        lines.append("|---|---|---|")
+        for date, x in sorted(sel.items()):
+            p = int(x.get("prompt", 0)); c = int(x.get("completion", 0))
+            lines.append(f"| {date} | {int(x.get('turns', 0))} | {p + c:,} |")
+    body = "\n".join(lines)
+
+    try:
+        rep_dir = _profile_root() / "reports"
+        rep_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"usage-{period}-{now.strftime('%Y%m%d')}.md"
+        (rep_dir / fname).write_text(body + "\n", encoding="utf-8")
+        body += f"\n\n(บันทึก: {rep_dir / fname})"
+    except Exception:
+        pass
+    return body
+
+
 def reset() -> None:
     with _LOCK:
         was = _ENABLED if _ENABLED is not None else bool(_load().get("opt_in"))

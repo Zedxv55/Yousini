@@ -106,6 +106,7 @@ try:
     from yousini_usage import record_turn as _usage_record_turn
     from yousini_usage import summary as _usage_summary
     from yousini_usage import summary_short as _usage_summary_short
+    from yousini_usage import report as _usage_report
     from yousini_usage import reset as _usage_reset
     _HAS_MONET = True
 except Exception:
@@ -204,7 +205,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -1568,6 +1569,55 @@ class Agent:
                 parts.append("— lint — ไม่พบ ruff/flake8 (ข้าม)")
         return "\n\n".join(parts) or "(ไม่มีอะไรตรวจ — ใช้ /dev <all|status|compile|test|lint>)"
 
+    # ---- Export/Import session (v3.8) ----
+    def session_export_tool(self, name: str, out: str = "", fmt: str = "json") -> str:
+        """ส่งออก session เป็นไฟล์ JSON/MD — สำรองหรือย้ายเครื่อง"""
+        from yousini_session_io import export_session
+        r = export_session(SessionStore(SESSION_DIR), name, out, fmt)
+        if r["ok"]:
+            return f"export สำเร็จ: {r['path']} ({r['fmt']}, {r['count']} ข้อความ)"
+        return r["error"]
+
+    def session_import_tool(self, path: str, new_name: str = "") -> str:
+        """นำเข้า session จากไฟล์ JSON — กลับมาใช้/ค้นหาได้"""
+        from yousini_session_io import import_session
+        r = import_session(SessionStore(SESSION_DIR), path, new_name)
+        if r["ok"]:
+            return f"import สำเร็จ: '{r['name']}' ({r['count']} ข้อความ)"
+        return r["error"]
+
+    def workflow_run_tool(self, name: str) -> str:
+        """รันเทมเพลตงานอัตโนมัติ (release|weekly_report|code_review หรือของผู้ใช้)"""
+        from yousini_workflows import run_workflow
+        exec_tool = lambda tname, targs: _exec_tool(self, tname, targs, tc_id="workflow")
+        return run_workflow(name, exec_tool=exec_tool, chat_turn=None, cwd=self.cwd)
+
+    def config_tool(self, action: str = "list", key: str = "", value: str = "") -> str:
+        """ตั้งค่า/ดู config และ feature flags"""
+        from yousini_config import config_cmd, flag_cmd
+        action = (action or "list").lower()
+        if action in ("flag", "flags"):
+            return flag_cmd(f"{key} {value}".strip())
+        if action == "get" and key:
+            return config_cmd(f"get {key}")
+        if action == "set" and key:
+            return config_cmd(f"set {key} {value}")
+        return config_cmd("list")
+
+    def plugin_list_tool(self) -> str:
+        """แสดง plugin ที่โหลดอยู่ (เพิ่ม tool/คำสั่ง)"""
+        from yousini_plugins import list_plugins
+        ps = list_plugins()
+        if not ps:
+            return "ไม่มี plugin อยู่ — วางโฟลเดอร์ที่มี plugin.py ลงในโฟลเดอร์ plugins/ แล้วรีสตาร์ท"
+        return "\n".join(f"• {p['name']} v{p['version']} — {p.get('description', '')}"
+                         for p in ps)
+
+    def update_tool(self, action: str = "check") -> str:
+        """ตรวจ/อัปเดตเวอร์ชัน Yousini"""
+        from yousini_update import update_main
+        return update_main(["go" if action == "update" else "check"], APP_VERSION)
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1819,7 +1869,13 @@ TOOLS = [
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "git_pr", "description": "สร้าง Pull Request จากงานที่ทำ: commit งานค้าง → (สร้าง) branch → push → เปิด PR ผ่าน gh (หรือคืนลิงก์ compare). action=create ต้องการ title; action=list แสดง PR ที่เปิดอยู่", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "list"]}, "title": {"type": "string", "description": "ชื่อ PR"}, "body": {"type": "string", "description": "รายละเอียด PR"}, "branch": {"type": "string", "description": "สาขา (ไม่ระบุ = ใช้สาขาปัจจุบัน)"}, "base": {"type": "string", "description": "สาขาปลายทาง (ค่าเริ่มต้น main)"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "scaffold", "description": "สร้างโครงโปรเจกต์เริ่มต้นจากเทมเพลต (ไม่ต้องใช้โมเดล): kind=python-cli|python-pkg|web-static, name=ชื่อโปรเจกต์ (ตัวเล็ก)", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["python-cli", "python-pkg", "web-static"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}}},
-    {"type": "function", "function": {"name": "dev_check", "description": "รวมตรวจโปรเจกต์ (สถานะ git, ไวยากรณ์ Python, รัน test, lint) — scope=all|status|compile|test|lint. ใช้ก่อนสรุปว่างานผ่านหรือหลัง refactor", "parameters": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["all", "status", "compile", "test", "lint"]}}, "required": []}}},
+     {"type": "function", "function": {"name": "dev_check", "description": "รวมตรวจโปรเจกต์ (สถานะ git, ไวยากรณ์ Python, รัน test, lint) — scope=all|status|compile|test|lint. ใช้ก่อนสรุปว่างานผ่านหรือหลัง refactor", "parameters": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["all", "status", "compile", "test", "lint"]}}, "required": []}}},
+    {"type": "function", "function": {"name": "session_export", "description": "ส่งออก session (บทสนทนาที่บันทึกไว้) เป็นไฟล์ JSON หรือ Markdown เพื่อสำรอง/ย้ายเครื่อง: name=ชื่อ session, out=เส้นทางไฟล์หรือโฟลเดอร์, fmt=json|md. ดูชื่อ session ได้จาก tool search_sessions หรือ /sessions", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "out": {"type": "string"}, "fmt": {"type": "string", "enum": ["json", "md"]}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "session_import", "description": "นำเข้า session จากไฟล์ JSON (จาก session_export หรือไฟล์ session เดิม) กลับมาใช้/ค้นหาได้: path=ไฟล์, new_name=ชื่อใหม่ (ไม่ระบุใช้ชื่อเดิม)", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "new_name": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "workflow_run", "description": "รันเทมเพลตงานอัตโนมัติ (ชุดขั้นตอนซ้ำ): name=release|weekly_report|code_review หรือเทมเพลตผู้ใช้. เทมเพลตมีขั้นตอน tool/prompt รันตามลำดับ", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "config", "description": "จัดการตั้งค่า/feature flags: action=list|get|set|flag — get/set ค่า config.json (เช่น theme), flag เปิด-ปิดความสามารถ (เช่น plugin_system, usage_report)", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "set", "flag"]}, "key": {"type": "string", "description": "ชื่อคีย์ (สำหรับ get/set/flag)"}, "value": {"type": "string", "description": "ค่าใหม่ (สำหรับ set/flag)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "plugin_list", "description": "แสดง plugin ที่ติดตั้ง/โหลดอยู่ (ส่วนขยายที่เพิ่ม tool/คำสั่ง) — พร้อมเวอร์ชันและคำอธิบาย", "parameters": {"type": "object", "properties": {}}, "required": []}},
+    {"type": "function", "function": {"name": "check_update", "description": "ตรวจสอบเวอร์ชัน Yousini ล่าสุดจาก GitHub เทียบกับปัจจุบัน — action=check|update. update จะดึงโค้ดใหม่ลง working tree (ต้องรันจาก repo Yousini)", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["check", "update"]}}, "required": []}}},
 ]
 
 IMPL = {
@@ -1846,6 +1902,12 @@ IMPL = {
     "scaffold": lambda a, k: k.scaffold_tool(**a),
     "dev_check": lambda a, k: k.dev_check_tool(**a),
     "cron": lambda a, k: k.cron_tool(**a),
+    "session_export": lambda a, k: k.session_export_tool(**a),
+    "session_import": lambda a, k: k.session_import_tool(**a),
+    "workflow_run": lambda a, k: k.workflow_run_tool(**a),
+    "config": lambda a, k: k.config_tool(**a),
+    "plugin_list": lambda a, k: k.plugin_list_tool(**a),
+    "check_update": lambda a, k: k.update_tool(**a),
 }
 
 # ---- MCP client (Phase 6): เครื่องมือจาก MCP server ภายนอก (ชื่อขึ้น mcp__<server>__<tool>) ----
@@ -1871,7 +1933,8 @@ _TOOL_FIX_HINT = (
     "web_browser) กรุณาใช้เฉพาะเครื่องมือที่กำหนดให้เท่านั้น: shell, read_file, write_file, "
     "edit_file, list_dir, glob, grep, web_fetch, web_search, set_cwd, ask_user, "
     "list_jobs, read_job, manage_todos, batch_edit_files, run_test_loop, git_pr, "
-    "scaffold, dev_check"
+    "scaffold, dev_check, session_export, session_import, workflow_run, config, "
+    "plugin_list, check_update"
 )
 
 
@@ -2389,6 +2452,14 @@ def _print_help():
         ("/pr <ชื่อ>|list", "สร้าง Pull Request (commit→branch→push→gh) / ดู PR เปิด"),
         ("/scaffold <kind> <name>", "สร้างโครงโปรเจกต์: python-cli|python-pkg|web-static"),
         ("/dev [all|status|compile|test|lint]", "รวมตรวจโปรเจกต์ (git/ไวยากรณ์/test/lint)"),
+        ("/plugins", "แสดง plugin ที่โหลดอยู่ (ส่วนขยาย tool/คำสั่ง)"),
+        ("/export <session> [--md] [--out ไฟล์]", "ส่งออก session เป็น JSON/MD (สำรอง/ย้ายเครื่อง)"),
+        ("/import <ไฟล์> [--name ชื่อ]", "นำเข้า session จากไฟล์ JSON"),
+        ("/update [check]", "ตรวจ/อัปเดตเวอร์ชัน Yousini จาก GitHub"),
+        ("/config list|get <key>|set <key> <ค่า>", "ดู/ตั้งค่า config.json"),
+        ("/flag [list|<ชื่อ> [on|off]]", "เปิด/ปิด feature flags (plugin_system, usage_report, ...)"),
+        ("/workflow list|run <ชื่อ>|show <ชื่อ>", "เทมเพลตงานอัตโนมัติ (release, weekly_report, code_review)"),
+        ("/usage report [daily|weekly|monthly]", "สร้างรายงานการใช้งานตามช่วงเวลา"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -2400,6 +2471,11 @@ def _print_help():
         ("yousini resume", "โหลด session ล่าสุดแล้วเข้าสู่แชท"),
         ("yousini cron [--interval 60|--once]", "รันงาน cron ตามเวลา (daemon / รอบเดียว)"),
         ("yousini mcp-add <ชื่อ> <คำสั่ง>", "เพิ่ม MCP server (client) — เครื่องมือขึ้น mcp__<ชื่อ>__<tool>"),
+        ("yousini plugin list|install <path>|rm <ชื่อ>", "จัดการ plugin (โหลด tool/คำสั่งเพิ่ม)"),
+        ("yousini session export|import", "ส่งออก/นำเข้า session (สำรอง, ย้ายเครื่อง)"),
+        ("yousini update [check]", "ตรวจ/อัปเดตเวอร์ชัน Yousini"),
+        ("yousini config|flag", "ตั้งค่า config.json / feature flags"),
+        ("yousini workflow list|run|show", "เทมเพลตงานอัตโนมัติ"),
     ]
     t = Text()
     t.append("  คำสั่งใน REPL\n", style="bold magenta")
@@ -3833,6 +3909,39 @@ def _print_session_summary():
         pass
 
 
+_PLUGINS = None  # cache ของ plugin ที่โหลดแล้ว
+
+
+def _load_plugins() -> dict:
+    """โหลด plugin ถ้า flag plugin_system เปิด — ลงทะเบียน tool schema/impl เพิ่ม"""
+    global _PLUGINS
+    if _PLUGINS is not None:
+        return _PLUGINS
+    _PLUGINS = {"schemas": [], "impls": {}, "repl": {}, "cli": {}}
+    try:
+        from yousini_config import get_flag
+        if not get_flag("plugin_system", True):
+            return _PLUGINS
+        from yousini_plugins import load_plugins
+        agg = load_plugins()
+        if agg["schemas"]:
+            for _t in agg["schemas"]:
+                _fn = _t.get("function", {})
+                if _fn.get("required") == []:
+                    _fn.pop("required", None)
+                if _fn.get("name") and not any(
+                        x.get("function", {}).get("name") == _fn["name"] for x in TOOLS):
+                    TOOLS.append(_t)
+            IMPL.update(agg["impls"])
+        _PLUGINS["schemas"] = agg["schemas"]
+        _PLUGINS["impls"] = agg["impls"]
+        _PLUGINS["repl"] = agg["repl"]
+        _PLUGINS["cli"] = agg["cli"]
+    except Exception:
+        pass
+    return _PLUGINS
+
+
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
@@ -3904,6 +4013,11 @@ def _run_repl(agent: Agent):
         if low == "/usage reset":
             _usage_reset() if _HAS_MONET else None
             console.print(Text("ล้างสถิติทั้งหมดแล้ว", style="yellow")); continue
+        if low == "/usage report" or low.startswith("/usage report "):
+            period = user_input[13:].strip().lower() or "weekly"
+            r = _usage_report(period) if _HAS_MONET else "(ปิดใช้งาน)"
+            console.print(Panel(r, title="Usage report", border_style="cyan", padding=(1, 2)))
+            continue
         if low == "/ads on":
             _set_ads(False)
             console.print(Text("เปิด sponsor line แล้ว (ปิดได้ด้วย /ads off หรือ tier pro)", style="dim")); continue
@@ -4084,6 +4198,73 @@ def _run_repl(agent: Agent):
             console.print(Panel(agent.dev_check_tool(rest), title="Dev check",
                                 border_style="cyan", padding=(1, 2)))
             continue
+        # ---- v3.8: plugins / session io / update / config / workflow ----
+        if low == "/plugins":
+            console.print(Panel(agent.plugin_list_tool(), title="Plugins",
+                                border_style="magenta", padding=(1, 2)))
+            continue
+        if low == "/export" or low.startswith("/export "):
+            rest = user_input[7:].strip()
+            parts = rest.split()
+            if not parts:
+                console.print(Text("ใช้: /export <ชื่อ session> [--md] [--out <ไฟล์>]", style="yellow"))
+                continue
+            name = parts[0]
+            fmt = "md" if "--md" in parts else "json"
+            out = ""
+            if "--out" in parts:
+                i = parts.index("--out")
+                if i + 1 < len(parts):
+                    out = parts[i + 1]
+            console.print(Panel(agent.session_export_tool(name, out, fmt), title="Export",
+                                border_style="green", padding=(1, 2)))
+            continue
+        if low == "/import" or low.startswith("/import "):
+            rest = user_input[7:].strip()
+            parts = rest.split()
+            if not parts:
+                console.print(Text("ใช้: /import <ไฟล์ session.json> [--name <ชื่อใหม่>]", style="yellow"))
+                continue
+            new_name = ""
+            if "--name" in parts:
+                i = parts.index("--name")
+                if i + 1 < len(parts):
+                    new_name = parts[i + 1]
+            console.print(Panel(agent.session_import_tool(parts[0], new_name), title="Import",
+                                border_style="green", padding=(1, 2)))
+            continue
+        if low == "/update" or low.startswith("/update "):
+            rest = user_input[7:].strip().lower()
+            r = agent.update_tool("update" if rest in ("go", "update") else "check")
+            console.print(Panel(r, title="Self-update", border_style="cyan", padding=(1, 2)))
+            continue
+        if low == "/config" or low.startswith("/config "):
+            from yousini_config import config_cmd
+            console.print(Panel(config_cmd(user_input[7:].strip()), title="Config",
+                                border_style="magenta", padding=(1, 2)))
+            continue
+        if low == "/flag" or low.startswith("/flag "):
+            from yousini_config import flag_cmd
+            console.print(Panel(flag_cmd(user_input[5:].strip()), title="Feature flags",
+                                border_style="magenta", padding=(1, 2)))
+            continue
+        if low == "/workflow" or low.startswith("/workflow "):
+            from yousini_workflows import workflow_main
+            exec_tool = lambda tname, targs: _exec_tool(agent, tname, targs, tc_id="workflow")
+            msg = workflow_main(user_input[9:].strip().split(), exec_tool, chat_turn=None)
+            console.print(Panel(msg, title="Workflow", border_style="cyan", padding=(1, 2)))
+            continue
+        # ---- plugin REPL commands (จาก plugin ที่โหลด) ----
+        _plugins = _load_plugins()
+        if _plugins["repl"] and low in _plugins["repl"]:
+            fn, desc = _plugins["repl"][low]
+            try:
+                out = fn(user_input[len(low):].strip(), agent)
+                if out:
+                    console.print(Text(str(out)))
+            except Exception as e:
+                console.print(Text(f"plugin error: {e}", style="red"))
+            continue
         chat_turn(agent, user_input)
         # Phase 3: auto-save session ทุก turn เพื่อให้ค้นหาย้อนหลังได้
         try:
@@ -4175,6 +4356,9 @@ def main():
         console.print(Text(f"Yousini {APP_VERSION} (Python {sys.version.split()[0]})", style="cyan"))
         return
 
+    # โหลด plugins (ถ้า flag plugin_system เปิด) — ก่อน dispatch คำสั่ง
+    _load_plugins()
+
     # ---- subcommand: serve ----
     if argv and argv[0] == "serve":
         o = _parse_flags(argv[1:])
@@ -4265,6 +4449,70 @@ def main():
         scope = argv[1] if len(argv) > 1 else "all"
         console.print(Panel(Agent(interactive=False).dev_check_tool(scope),
                             title="Dev check", border_style="cyan", padding=(1, 2)))
+        return
+
+    # ---- subcommand: plugin (v3.8) ----
+    if argv and argv[0] == "plugin":
+        from yousini_plugins import plugin_main
+        plugin_main(argv[1:])
+        return
+
+    # ---- subcommand: session export/import (v3.8) ----
+    if argv and argv[0] == "session":
+        from yousini_session_io import session_io_main
+        console.print(Panel(session_io_main(SessionStore(SESSION_DIR), argv[1:]),
+                            title="Session", border_style="green", padding=(1, 2)))
+        return
+
+    # ---- subcommand: update / self-update (v3.8) ----
+    if argv and argv[0] == "update":
+        from yousini_update import update_main
+        console.print(Panel(update_main(argv[1:], APP_VERSION), title="Self-update",
+                            border_style="cyan", padding=(1, 2)))
+        return
+
+    # ---- subcommand: config / flag (v3.8) ----
+    if argv and argv[0] in ("config", "flag"):
+        from yousini_config import config_cmd, flag_cmd
+        body = (flag_cmd(" ".join(argv[1:])) if argv[0] == "flag"
+                else config_cmd(" ".join(argv[1:])))
+        console.print(Panel(body, title="Config", border_style="magenta", padding=(1, 2)))
+        return
+
+    # ---- subcommand: workflow (v3.8) ----
+    if argv and argv[0] == "workflow":
+        from yousini_workflows import workflow_main
+        exec_tool = lambda tname, targs: _exec_tool(
+            Agent(interactive=False), tname, targs, tc_id="workflow")
+        body = workflow_main(argv[1:], exec_tool, chat_turn=None)
+        console.print(Panel(body, title="Workflow", border_style="cyan", padding=(1, 2)))
+        return
+
+    # ---- subcommand: usage (v3.8 report) ----
+    if argv and argv[0] == "usage":
+        from yousini_usage import summary, report
+        rest = argv[1:]
+        if rest and rest[0].lower() in ("report", "weekly", "daily", "monthly"):
+            period = rest[0].lower()
+            if period == "report":
+                period = rest[1].lower() if len(rest) > 1 and rest[1].lower() in ("daily", "weekly", "monthly") else "weekly"
+            console.print(Panel(report(period), title="Usage report",
+                                border_style="cyan", padding=(1, 2)))
+        else:
+            console.print(Panel(summary(), title="Usage telemetry",
+                                border_style="magenta", padding=(1, 2)))
+        return
+
+    # ---- subcommand: plugin CLI commands (จาก plugin ที่โหลด) ----
+    _plugins = _load_plugins()
+    if argv and _plugins["cli"] and argv[0] in _plugins["cli"]:
+        fn, desc = _plugins["cli"][argv[0]]
+        try:
+            msg = fn(argv[1:], _parse_flags(argv[1:]))
+            if msg:
+                console.print(Text(str(msg)))
+        except Exception as e:
+            console.print(Text(f"plugin error: {e}", style="red"))
         return
 
     # ---- subcommand: login ----

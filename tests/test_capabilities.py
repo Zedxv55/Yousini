@@ -26,6 +26,58 @@ def test_tools_registered():
         assert any(t.get("function", {}).get("name") == name for t in yousini.TOOLS)
 
 
+def test_v38_tools_registered():
+    for name in ("session_export", "session_import", "workflow_run", "config",
+                 "plugin_list", "check_update"):
+        assert name in yousini.IMPL
+        assert any(t.get("function", {}).get("name") == name for t in yousini.TOOLS)
+
+
+def test_config_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUSINI_CONFIG_FILE", str(tmp_path / "config.json"))
+    r = _bind("config_tool", tmp_path)("list")
+    assert "config.json" in r or "(config.json ว่าง" in r
+    r2 = _bind("config_tool", tmp_path)("set", key="theme", value="nord")
+    assert "config 'theme'" in r2
+    r3 = _bind("config_tool", tmp_path)("flag", key="usage_report", value="off")
+    assert "flag 'usage_report' = ปิด" in r3
+    r4 = _bind("config_tool", tmp_path)("flag", key="usage_report")
+    assert "ปิด" in r4
+
+
+def test_plugin_list_tool_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUSINI_PLUGINS_DIR", str(tmp_path / "plugins"))
+    r = _bind("plugin_list_tool", tmp_path)()
+    assert "ไม่มี plugin" in r
+
+
+def test_update_tool_check(monkeypatch, tmp_path):
+    import yousini_update
+    monkeypatch.setattr(yousini_update, "latest_version", lambda: "9.9.9")
+    r = _bind("update_tool", tmp_path)("check")
+    assert "9.9.9" in r and "ใหม่" in r
+
+
+def test_session_export_import_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr(yousini, "SESSION_DIR", str(tmp_path / "sessions"))
+    store = yousini.SessionStore(tmp_path / "sessions")
+    store.save("s1", [{"role": "user", "content": "hello"}], {"model": "m"})
+    r = _bind("session_export_tool", tmp_path)("s1", fmt="json")
+    assert "export สำเร็จ" in r
+    r2 = _bind("session_export_tool", tmp_path)("nope")
+    assert "ไม่พบ session" in r2
+    r3 = _bind("session_import_tool", tmp_path)(str(tmp_path / "sessions" / "s1.json"))
+    assert "import สำเร็จ" in r3
+
+
+def test_workflow_run_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUSINI_WORKFLOWS_DIR", str(tmp_path / "workflows"))
+    r = _bind("workflow_run_tool", tmp_path)("release")
+    assert "รันเทมเพลต 'release'" in r
+    r2 = _bind("workflow_run_tool", tmp_path)("not-exist")
+    assert "ไม่พบเทมเพลต" in r2
+
+
 def test_dev_check_compile(tmp_path):
     (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "bad.py").write_text("def broken(:\n", encoding="utf-8")

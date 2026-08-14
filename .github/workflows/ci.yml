@@ -27,4 +27,4 @@ jobs:
       - name: Run tests
         run: python -m pytest tests -q -p no:cacheprovider
       - name: Verify modules compile
-        run: python -m py_compile yousini.py yousini_git.py yousini_scaffold.py yousini_queue.py yousini_lsp.py
+        run: python -m py_compile yousini.py yousini_git.py yousini_scaffold.py yousini_queue.py yousini_lsp.py yousini_config.py yousini_plugins.py yousini_session_io.py yousini_update.py yousini_workflows.py yousini_usage.py
