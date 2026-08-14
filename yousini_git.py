@@ -12,12 +12,42 @@ import subprocess
 from pathlib import Path
 
 
+_GIT_BIN = None
+
+
+def _git_bin() -> str:
+    """หา git executable — env YOUSINI_GIT → which → candidates Windows
+    (cache) — คืน '' ถ้าไม่เจอ"""
+    global _GIT_BIN
+    if _GIT_BIN is not None:
+        return _GIT_BIN
+    cand = [os.environ.get("YOUSINI_GIT", "")]
+    if shutil.which("git"):
+        cand.append(shutil.which("git"))
+    if os.name == "nt":
+        for base in (os.environ.get("LOCALAPPDATA", ""),
+                     os.environ.get("PROGRAMFILES", ""),
+                     os.environ.get("PROGRAMFILES(X86)", "")):
+            if base:
+                cand.append(os.path.join(base, "Git", "cmd", "git.exe"))
+        for sub in ("Tools", "tools", "Apps", "apps"):
+            cand.append(os.path.join(os.path.expanduser("~"), sub, "git", "cmd", "git.exe"))
+        cand.append(os.path.join(os.path.expanduser("~"), "scoop", "shims", "git.exe"))
+    for c in cand:
+        if c and os.path.isfile(c):
+            _GIT_BIN = c
+            return c
+    _GIT_BIN = ""
+    return ""
+
+
 def _git(cwd: str, *args: str) -> str:
     """รัน git คืน stdout (ว่างถ้าล้มเหลว) — ไม่ throw"""
-    if shutil.which("git") is None:
+    g = _git_bin()
+    if not g:
         return ""
     try:
-        r = subprocess.run(["git", "-C", str(cwd), *args],
+        r = subprocess.run([g, "-C", str(cwd), *args],
                            capture_output=True, text=True, timeout=10,
                            encoding="utf-8", errors="replace")
         return r.stdout
@@ -84,3 +114,146 @@ def last_commits_block(n: int = 8, cwd: str = ".") -> str:
         return ""
     body = "\n".join("  " + ln for ln in log)
     return f"=== ประวัติ git ล่าสุด (ใช้แก้บั๊ก/เข้าใจโค้ด) ===\n{body}\n"
+
+
+def _run(cwd: str, *args: str):
+    g = _git_bin()
+    if not g:
+        return None
+    env = dict(os.environ)
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    env.setdefault("GIT_ASKPASS", "echo")
+    try:
+        return subprocess.run([g, "-C", str(cwd), *args],
+                              capture_output=True, text=True, timeout=60,
+                              encoding="utf-8", errors="replace", env=env)
+    except Exception:
+        return None
+
+
+def current_branch(cwd: str = ".") -> str:
+    r = _run(cwd, "branch", "--show-current")
+    return (r.stdout.strip() if r else "") or ""
+
+
+def remote_url(cwd: str = ".") -> str:
+    r = _run(cwd, "config", "--get", "remote.origin.url")
+    return (r.stdout.strip() if r else "") or ""
+
+
+def _slug(title: str) -> str:
+    out = []
+    for ch in (title or "").lower():
+        if "a" <= ch <= "z" or "0" <= ch <= "9":
+            out.append(ch)
+        elif out and out[-1] != "-":
+            out.append("-")
+    return "".join(out).strip("-")[:40] or "pr"
+
+
+def _gh_available() -> bool:
+    return shutil.which("gh") is not None
+
+
+def _parse_origin(url: str):
+    """แปลง remote origin → (owner, repo)  รองรับ https / ssh"""
+    url = (url or "").strip()
+    if url.startswith("git@"):
+        body = url.split(":", 1)[-1]
+        owner, _, repo = body.rpartition("/")
+        return owner, repo.removesuffix(".git")
+    if url.startswith("http"):
+        parts = url.rstrip("/").split("/")
+        if len(parts) >= 2:
+            return parts[-2], parts[-1].removesuffix(".git")
+    return "", ""
+
+
+def create_pr(title: str, body: str = "", branch: str = "", base: str = "main",
+              cwd: str = ".") -> str:
+    """PR flow: commit งานค้าง → (สร้าง) branch → push → gh pr create (หรือลิงก์ compare)
+    คืนข้อความสรุป — ไม่ throw"""
+    if not is_repo(cwd):
+        return "Error: ไม่ได้อยู่ใน git repo"
+    origin = remote_url(cwd)
+    if not origin:
+        return "Error: ไม่มี remote 'origin' — ตั้ง `git remote add origin <url>` ก่อน"
+    title = (title or "").strip()
+    if not title:
+        return "Error: ต้องระบุ title ของ PR"
+    base = base or "main"
+
+    # 1) commit งานค้าง
+    r = _run(cwd, "add", "-A")
+    if r is None or r.returncode != 0:
+        return "Error: git add ล้มเหลว"
+    r = _run(cwd, "status", "--porcelain")
+    dirty = bool((r.stdout or "").strip()) if r else False
+    if dirty:
+        c = _run(cwd, "commit", "-m", f"[Yousini PR] {title}")
+        if c is None or c.returncode != 0:
+            return "Error: commit งานค้างล้มเหลว"
+
+    # 2) เลือก/สร้าง branch (ห้าม PR ลงสาขาเดียวกับ base)
+    cur = current_branch(cwd)
+    if branch and branch != cur:
+        chk = _run(cwd, "rev-parse", "--verify", "--quiet", branch)
+        if chk is not None and chk.returncode == 0:
+            _run(cwd, "checkout", branch)
+        else:
+            _run(cwd, "checkout", "-b", branch)
+        cur = branch
+    elif cur == base:
+        branch = "yousini/" + _slug(title)
+        _run(cwd, "checkout", "-b", branch)
+        cur = branch
+    else:
+        branch = cur
+    if not branch:
+        return "Error: ตรวจไม่พบสาขา"
+
+    # 3) push
+    p = _run(cwd, "push", "-u", "origin", branch)
+    if p is None or p.returncode != 0:
+        return (f"Error: push {branch} → origin ล้มเหลว (ตรวจสิทธิ์ / network):\n"
+                + ((p.stderr or "") if p else ""))
+
+    # 4) PR — ใช้ gh ถ้ามี ไม่งั้นคืนลิงก์ compare
+    owner, repo = _parse_origin(origin)
+    if _gh_available():
+        try:
+            gh = subprocess.run(
+                ["gh", "pr", "create", "--base", base, "--head", branch,
+                 "--title", title, "--body", body or title, "--json", "url"],
+                cwd=cwd, capture_output=True, text=True, timeout=90,
+                encoding="utf-8", errors="replace")
+            if gh.returncode == 0:
+                import json as _json
+                try:
+                    url = _json.loads(gh.stdout).get("url", "")
+                except Exception:
+                    url = ""
+                if url:
+                    return f"เปิด PR แล้ว: {url} (branch={branch} → {base})"
+            return (f"push แล้ว (branch={branch}). gh pr create ล้มเหลว: "
+                    f"{(gh.stderr or '').strip()[:300]}")
+        except Exception as e:
+            return f"push แล้ว (branch={branch}). gh error: {e}"
+    if owner and repo:
+        return (f"push แล้ว (branch={branch}). เปิด PR ผ่านลิงก์นี้:\n"
+                f"https://github.com/{owner}/{repo}/compare/{base}...{branch}?expand=1")
+    return f"push แล้ว (branch={branch}). เปิด PR ที่หน้า repo ({origin})"
+
+
+def pr_list(cwd: str = ".") -> str:
+    """รายการ PR ที่เปิดอยู่ (gh) — ถ้าไม่มี gh คืนข้อความเตือน"""
+    if not _gh_available():
+        return "(ติดตั้ง GitHub CLI (gh) เพื่อดู/จัดการ PR — https://cli.github.com)"
+    try:
+        r = subprocess.run(["gh", "pr", "list", "--limit", "20"],
+                           cwd=cwd, capture_output=True, text=True, timeout=60,
+                           encoding="utf-8", errors="replace")
+        return r.stdout.strip() or "(ไม่มี PR ที่เปิดอยู่)" if r.returncode == 0 \
+            else f"gh pr list ล้มเหลว: {(r.stderr or '').strip()[:300]}"
+    except Exception as e:
+        return f"gh pr list error: {e}"

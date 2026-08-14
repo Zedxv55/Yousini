@@ -204,7 +204,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.6.0"
+APP_VERSION = "3.7.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -928,33 +928,53 @@ class Agent:
 
     def compact(self, keep_last: int = 6) -> str:
         """ยุบบริบทเก่าๆ เป็นสรุปสั้นๆ เพื่อลดโทเค็น (ช่วยโมเดลฟรีเมื่อสนทนายาว)
-        เก็บ system message + ไม่เกิน keep_last ข้อความล่าสุด แล้วสรุปที่เหลือด้วยโมเดล"""
+        เก็บ system message + ไม่เกิน keep_last ข้อความล่าสุด แล้วสรุปส่วนที่เหลือ
+        แบบ chunked (ทีละกลุ่ม ~6 ข้อความ/2500 ตัวอักษร) — ลดโทเค็นได้มากกว่าแบบรวมก้อนเดียว"""
         if len(self.messages) <= keep_last + 1:
             return "(ไม่ต้องยุบ บริบทยังสั้นอยู่)"
         sys0 = self.messages[0]
         rest = self.messages[1:]
         to_sum = rest[:-keep_last] if keep_last else rest
         recent = rest[-keep_last:] if keep_last else []
-        blob = "\n\n".join(
-            f"[{m.get('role','?')}] {_truncate(m.get('content') or '', 1500)}"
-            for m in to_sum)
-        prompt = ("สรุปบทสนทนาด้านล่างให้กระชับที่สุด (เก็บเฉพาะข้อมูลสำคัญ ที่ทำไปแล้ว "
-                  "ผลลัพธ์ และคำตัดสิน) ตอบเป็นภาษาไทย ย่อหน้าเดียว ไม่ต้องไหว้:")
-        try:
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": prompt},
-                          {"role": "user", "content": blob}],
-                temperature=0.2, stream=False)
-            summ = resp.choices[0].message.content or ""
-        except Exception as e:
-            return f"(ยุบบริบทไม่ได้: {e})"
+        # แบ่งเป็น chunk ตามจำนวนข้อความ/ขนาด เพื่อไม่ให้เกิน context ในรอบเดียว
+        chunks, cur, cur_len = [], [], 0
+        for m in to_sum:
+            c = _truncate(m.get("content") or "", 1500)
+            size = len(c)
+            if cur and (len(cur) >= 6 or cur_len + size > 2500):
+                chunks.append(cur)
+                cur, cur_len = [], 0
+            cur.append((m.get("role", "?"), c))
+            cur_len += size
+        if cur:
+            chunks.append(cur)
+        summaries = []
+        for i, chunk in enumerate(chunks, 1):
+            blob = "\n\n".join(f"[{role}] {c}" for role, c in chunk)
+            prompt = (f"สรุปส่วนที่ {i}/{len(chunks)} ของบทสนทนาด้านล่างให้กระชับที่สุด "
+                      "(เก็บเฉพาะข้อมูลสำคัญ: ทำอะไรไปแล้ว ผลลัพธ์ และคำตัดสิน) "
+                      "ตอบเป็นภาษาไทย ย่อหน้าเดียว ไม่ต้องไหว้:")
+            try:
+                resp = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": prompt},
+                              {"role": "user", "content": blob}],
+                    temperature=0.2, stream=False)
+                s = (resp.choices[0].message.content or "").strip()
+                if s:
+                    summaries.append(s)
+            except Exception as e:
+                return f"(ยุบบริบทไม่ได้: {e})"
+        if not summaries:
+            return "(ไม่สามารถสรุปบริบทได้)"
+        merged = ("\n".join(f"[ส่วน {i}] {s}" for i, s in enumerate(summaries, 1))
+                  if len(summaries) > 1 else summaries[0])
         self.messages = [
             sys0,
-            {"role": "user", "content": "[บริบทสรุปจากการสนทนาก่อนหน้า]\n" + summ},
+            {"role": "user", "content": "[บริบทสรุปจากการสนทนาก่อนหน้า]\n" + merged},
             {"role": "assistant", "content": "รับทราบสรุปบริบทแล้ว"},
         ] + recent
-        return f"ยุบบริบทเหลือ {len(self.messages)} ข้อความ"
+        return f"ยุบบริบทเหลือ {len(self.messages)} ข้อความ (สรุป {len(summaries)} ส่วน)"
 
     # ---- รายการสิ่งที่ต้องทำ (todo) — แสดงแผน/ความคืบหน้าให้ผู้ใช้เห็นชัดเจน ----
     def manage_todos(self, action: str, content: str = "", todo_id=None, status: str = "") -> str:
@@ -1475,6 +1495,79 @@ class Agent:
             parts.append(f"• [{r['session']}] ({str(r['saved_at'])[:16]}) {r['role']}: {r['snippet']}")
         return "\n".join(parts)
 
+    def git_pr_tool(self, action: str = "create", title: str = "", body: str = "",
+                    branch: str = "", base: str = "main") -> str:
+        """สร้าง PR: commit งานค้าง → (สร้าง) branch → push → gh pr create (หรือลิงก์ compare)"""
+        from yousini_git import create_pr, pr_list
+        if action == "list":
+            return pr_list(self.cwd)
+        if action == "create":
+            return create_pr(title, body, branch, base, self.cwd)
+        return "ใช้: action=create|list, title=<ชื่อ PR>, body=<รายละเอียด>, branch=<สาขา>, base=<base>"
+
+    def scaffold_tool(self, kind: str, name: str) -> str:
+        """สร้างโครงโปรเจกต์จากเทมเพลต (python-cli|python-pkg|web-static)"""
+        from yousini_scaffold import scaffold
+        return scaffold(kind, name, self.cwd)
+
+    def dev_check_tool(self, scope: str = "all") -> str:
+        """รวมตรวจโปรเจกต์: all|status|compile|test|lint — สถานะ git, ไวยากรณ์ Python, test, lint"""
+        scope = (scope or "all").lower()
+        from yousini_git import status_short
+        from pathlib import Path as _Path
+        parts = []
+        if scope in ("all", "status"):
+            parts.append("— git status —\n" + status_short(self.cwd))
+        if scope in ("all", "compile"):
+            import py_compile
+            py = [str(p) for p in _Path(self.cwd).rglob("*.py")
+                  if ".git" not in p.parts and "__pycache__" not in p.parts][:200]
+            bad = []
+            for f in py:
+                try:
+                    py_compile.compile(f, doraise=True, quiet=1)
+                except Exception:
+                    bad.append(f)
+            parts.append("— compile — ตรวจ " + str(len(py)) + " ไฟล์ .py → " +
+                         ("ไวยากรณ์ OK ทั้งหมด" if not bad else
+                          "พบปัญหา " + str(len(bad)) + " ไฟล์:\n" + "\n".join("  " + b for b in bad)))
+        if scope in ("all", "test"):
+            tests = [p for p in _Path(self.cwd).rglob("test_*.py") if ".git" not in p.parts] + \
+                    [p for p in _Path(self.cwd).rglob("*_test.py") if ".git" not in p.parts]
+            if tests:
+                try:
+                    proc = subprocess.run([sys.executable, "-m", "pytest", "-q",
+                                           "-p", "no:cacheprovider"],
+                                          cwd=self.cwd, capture_output=True,
+                                          text=True, timeout=240)
+                    lines = (proc.stdout or "").strip().splitlines()
+                    tail = lines[-3:] if len(lines) > 3 else lines
+                    body = "\n".join(tail)
+                    if proc.returncode != 0:
+                        body += f"\n(exit {proc.returncode})"
+                    parts.append("— test —\n" + (body or "(ไม่มีผลลัพธ์)"))
+                except subprocess.TimeoutExpired:
+                    parts.append("— test — หมดเวลา (240s)")
+                except Exception as e:
+                    parts.append(f"— test — error: {e}")
+            else:
+                parts.append("— test — ไม่พบไฟล์ test_*.py")
+        if scope in ("all", "lint"):
+            runner = next((x for x in ("ruff", "flake8") if shutil.which(x)), None)
+            if runner:
+                try:
+                    proc = subprocess.run([runner, "check", "."], cwd=self.cwd,
+                                          capture_output=True, text=True, timeout=120)
+                    out = (proc.stdout or "").strip()
+                    parts.append("— " + runner + " — " +
+                                 ("ไม่มีปัญหา" if proc.returncode == 0 and not out
+                                  else (out[:1500] or f"(exit {proc.returncode})")))
+                except Exception as e:
+                    parts.append(f"— {runner} — error: {e}")
+            else:
+                parts.append("— lint — ไม่พบ ruff/flake8 (ข้าม)")
+        return "\n\n".join(parts) or "(ไม่มีอะไรตรวจ — ใช้ /dev <all|status|compile|test|lint>)"
+
     # ---- รัน Python (แขนขาทำงานคำนวณ/ประมวลผลจริง) ----
     def run_python(self, code: str, timeout: int = None) -> str:
         if not self.allow_shell:
@@ -1724,6 +1817,9 @@ TOOLS = [
     {"type": "function", "function": {"name": "git", "description": "ใช้ประวัติ git เป็น context: log=รายการ commit ล่าสุด, full=log พร้อมผู้แต่ง/วันที่, status=ไฟล์ค้าง, diff=diff ยังไม่ commit, blame=ใครแก้บรรทัดนี้", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["log", "full", "status", "diff", "blame"]}, "n": {"type": "integer"}, "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "symbols", "description": "ค้นหาโครงสร้างโค้ดด้วย symbol index (AST-aware): summary=ภาพรวมโปรเจกต์, find=<ชื่อ>=go-to-definition, refs=<ชื่อ>=ทุกจุดอ้างอิง, list+query=รายการสัญลักษณ์", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "find", "refs", "list"]}, "name": {"type": "string"}, "query": {"type": "string"}}, "required": ["action"]}}},
     {"type": "function", "function": {"name": "search_sessions", "description": "ค้นหาย้อนหลังใน session ก่อนหน้าทั้งหมด (เหมือน Hermes session_search) — ใช้เมื่อผู้ใช้ถามว่าเคยทำ/คุยเรื่องอะไรไว้ก่อนหน้านี้", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "คำค้น"}, "limit": {"type": "integer", "description": "จำนวนผลสูงสุด (ค่าเริ่มต้น 10)"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "git_pr", "description": "สร้าง Pull Request จากงานที่ทำ: commit งานค้าง → (สร้าง) branch → push → เปิด PR ผ่าน gh (หรือคืนลิงก์ compare). action=create ต้องการ title; action=list แสดง PR ที่เปิดอยู่", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["create", "list"]}, "title": {"type": "string", "description": "ชื่อ PR"}, "body": {"type": "string", "description": "รายละเอียด PR"}, "branch": {"type": "string", "description": "สาขา (ไม่ระบุ = ใช้สาขาปัจจุบัน)"}, "base": {"type": "string", "description": "สาขาปลายทาง (ค่าเริ่มต้น main)"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "scaffold", "description": "สร้างโครงโปรเจกต์เริ่มต้นจากเทมเพลต (ไม่ต้องใช้โมเดล): kind=python-cli|python-pkg|web-static, name=ชื่อโปรเจกต์ (ตัวเล็ก)", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["python-cli", "python-pkg", "web-static"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}}},
+    {"type": "function", "function": {"name": "dev_check", "description": "รวมตรวจโปรเจกต์ (สถานะ git, ไวยากรณ์ Python, รัน test, lint) — scope=all|status|compile|test|lint. ใช้ก่อนสรุปว่างานผ่านหรือหลัง refactor", "parameters": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["all", "status", "compile", "test", "lint"]}}, "required": []}}},
 ]
 
 IMPL = {
@@ -1746,6 +1842,9 @@ IMPL = {
     "search_sessions": lambda a, k: k.search_sessions(**a),
     "symbols": lambda a, k: k.symbols_tool(**a),
     "git": lambda a, k: k.git_tool(**a),
+    "git_pr": lambda a, k: k.git_pr_tool(**a),
+    "scaffold": lambda a, k: k.scaffold_tool(**a),
+    "dev_check": lambda a, k: k.dev_check_tool(**a),
     "cron": lambda a, k: k.cron_tool(**a),
 }
 
@@ -1771,7 +1870,8 @@ _TOOL_FIX_HINT = (
     "ข้อผิดพลาด: คุณพยายามเรียกใช้เครื่องมือที่ไม่มีในระบบ (เช่น repo_browser, python, "
     "web_browser) กรุณาใช้เฉพาะเครื่องมือที่กำหนดให้เท่านั้น: shell, read_file, write_file, "
     "edit_file, list_dir, glob, grep, web_fetch, web_search, set_cwd, ask_user, "
-    "list_jobs, read_job, manage_todos, batch_edit_files, run_test_loop"
+    "list_jobs, read_job, manage_todos, batch_edit_files, run_test_loop, git_pr, "
+    "scaffold, dev_check"
 )
 
 
@@ -2286,6 +2386,9 @@ def _print_help():
         ("/agent send <worker> <โจทย์>", "ส่งงานให้ agent อื่นผ่านคิว (collaboration)"),
         ("/agent status|result <id>", "ดูสถานะคิว / ผลลัพธ์งาน"),
         ("/work", "ประมวลผลงานที่ค้างในคิวตอนนี้"),
+        ("/pr <ชื่อ>|list", "สร้าง Pull Request (commit→branch→push→gh) / ดู PR เปิด"),
+        ("/scaffold <kind> <name>", "สร้างโครงโปรเจกต์: python-cli|python-pkg|web-static"),
+        ("/dev [all|status|compile|test|lint]", "รวมตรวจโปรเจกต์ (git/ไวยากรณ์/test/lint)"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -3954,6 +4057,33 @@ def _run_repl(agent: Agent):
             _git_cmd(agent, user_input[4:].strip()); continue
         if low == "/cron" or low.startswith("/cron "):
             _cron_cmd(agent, user_input[5:].strip()); continue
+        if low == "/pr" or low.startswith("/pr "):
+            rest = user_input[3:].strip()
+            if rest.lower().startswith("list"):
+                console.print(Panel(agent.git_pr_tool("list"), title="เปิด PR",
+                                    border_style="green", padding=(1, 2)))
+            elif rest:
+                console.print(Panel(agent.git_pr_tool("create", title=rest),
+                                    title="PR flow", border_style="green", padding=(1, 2)))
+            else:
+                console.print(Text("ใช้: /pr <ชื่อ PR>  |  /pr list", style="yellow"))
+            continue
+        if low == "/scaffold" or low.startswith("/scaffold "):
+            parts = user_input[9:].strip().split(None, 1)
+            if len(parts) >= 2:
+                r = agent.scaffold_tool(parts[0].lower(), parts[1].strip())
+                console.print(Panel(r, title="Scaffold",
+                                    border_style="green" if not r.startswith("Error") else "red",
+                                    padding=(1, 2)))
+            else:
+                from yousini_scaffold import kinds_text
+                console.print(Text(f"ใช้: /scaffold <kind> <name>  (kind: {kinds_text()})", style="yellow"))
+            continue
+        if low == "/dev" or low.startswith("/dev "):
+            rest = user_input[4:].strip().lower() or "all"
+            console.print(Panel(agent.dev_check_tool(rest), title="Dev check",
+                                border_style="cyan", padding=(1, 2)))
+            continue
         chat_turn(agent, user_input)
         # Phase 3: auto-save session ทุก turn เพื่อให้ค้นหาย้อนหลังได้
         try:
@@ -4102,6 +4232,39 @@ def main():
         o = _parse_flags(argv[1:])
         work_main(once=bool(o.get("once")), interval=float(o.get("interval", 5)),
                   worker=str(o.get("worker", "default")), max_tasks=int(o.get("max", 50)))
+        return
+
+    # ---- subcommand: pr ----
+    if argv and argv[0] == "pr":
+        o = _parse_flags(argv[1:])
+        from yousini_git import create_pr, pr_list
+        rest = o.get("_", [])
+        if rest and rest[0].lower() == "list":
+            console.print(Panel(pr_list("."), title="เปิด PR", border_style="green", padding=(1, 2)))
+        elif rest:
+            console.print(Panel(create_pr(rest[0], body=" ".join(rest[1:])),
+                                title="PR flow", border_style="green", padding=(1, 2)))
+        else:
+            console.print(Text("ใช้: yousini pr <ชื่อ PR> [รายละเอียด]  |  yousini pr list", style="red"))
+        return
+
+    # ---- subcommand: scaffold ----
+    if argv and argv[0] == "scaffold":
+        from yousini_scaffold import scaffold, kinds_text
+        if len(argv) >= 3:
+            r = scaffold(argv[1], argv[2])
+            console.print(Panel(r, title="Scaffold",
+                                border_style="green" if not r.startswith("Error") else "red",
+                                padding=(1, 2)))
+        else:
+            console.print(Text(f"ใช้: yousini scaffold <kind> <name>  (kind: {kinds_text()})", style="red"))
+        return
+
+    # ---- subcommand: dev ----
+    if argv and argv[0] == "dev":
+        scope = argv[1] if len(argv) > 1 else "all"
+        console.print(Panel(Agent(interactive=False).dev_check_tool(scope),
+                            title="Dev check", border_style="cyan", padding=(1, 2)))
         return
 
     # ---- subcommand: login ----

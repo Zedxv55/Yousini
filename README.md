@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.6.0 | MIT | Python 3.10+ | English / Thai |
+| 3.7.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -27,6 +27,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Marketplace / Skills & Plugins](#marketplace--skills--plugins)
 - [Team / Multi-User Workspace](#team--multi-user-workspace)
 - [Agent Collaboration / คิวงาน](#agent-collaboration--คิวงาน)
+- [Capabilities / ความสามารถขั้นสูง](#capabilities--ความสามารถขั้นสูง)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
@@ -285,6 +286,9 @@ yousini connect https://yousini.example.com --token secret
 | `yousini marketplace <cmd>` | Browse / install / update skills & tool plugins (see [Marketplace](#marketplace--skills--plugins)) |
 | `yousini agent <cmd>` | Agent collaboration queue: send / status / result / requeue / prune / clear / reclaim |
 | `yousini work [--once]` | Run as a worker: pull queued tasks, run them, save results |
+| `yousini pr <title> [body]` / `pr list` | Open a Pull Request (commit → branch → push → `gh` or compare link) |
+| `yousini scaffold <kind> <name>` | Generate a starter project (`python-cli` / `python-pkg` / `web-static`) |
+| `yousini dev [scope]` | Combined project check: `all` / `status` / `compile` / `test` / `lint` |
 | `yousini team <cmd>` | Team workspace: status / init / join / leave / users / set-registry (see [Team](#team--multi-user-workspace)) |
 | `yousini mcp-add <name> <cmd>` | Add an external MCP server |
 | `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
@@ -579,6 +583,49 @@ yousini work --worker qa-1 --interval 5  # worker loop: poll ทุก 5s
 | `GET /api/queue/get?id=<id>` | ดูงาน |
 
 โครงงาน: `{id, from, worker, prompt, priority, status, created_at, started_at, done_at, result, error}` — งาน `running` ที่ค้างเกิน `YOUSINI_QUEUE_STALE` (ค่าเริ่มต้น 300s, worker ตายกลางทาง) ถูกย้อนกลับเป็น pending อัตโนมัติ. สถานะคิวแสดงใน DASHBOARD ด้วย. คิวเก็บที่ `~/.yousini/queue.json` (หรือ `YOUSINI_QUEUE_FILE`).
+
+---
+
+## Capabilities / ความสามารถขั้นสูง
+
+### Git PR flow — เปิด Pull Request
+
+สร้าง PR จากงานที่ทำได้ในคำสั่งเดียว: **commit งานค้าง → สร้าง/ใช้ branch → push → เปิด PR** (ใช้ `gh` ถ้ามี ไม่งั้นคืนลิงก์ compare ที่เปิดเบราว์เซอร์ได้):
+
+```bash
+yousini pr "เพิ่มโมดูลเว็บhooks"          # commit งานค้าง + สร้าง branch yousini/<slug> + push + PR
+yousini pr list                            # รายการ PR ที่เปิด (ต้องมี gh)
+```
+
+ในแชท: `/pr <ชื่อ PR>` หรือ `/pr list`. Agent ใช้ได้ผ่าน tool `git_pr` (action=create|list) — เหมาะสำหรับเปิด PR หลังจบงาน. หา git อัตโนมัติ (env `YOUSINI_GIT` → PATH → ตำแหน่ง Windows ทั่วไป), push ใช้ `GIT_TERMINAL_PROMPT=0` ป้องกันค้าง.
+
+### Project scaffolding — สร้างโปรเจกต์ทันที
+
+เทมเพลตสำเร็จรูป (ไม่ใช้โมเดล — สร้างได้เลย):
+
+```bash
+yousini scaffold python-cli mycli        # CLI: pyproject + entry script + test
+yousini scaffold python-pkg mylib        # แพ็กเกจ: __init__ + core + test
+yousini scaffold web-static portfolio    # เว็บ static: index.html + style.css + app.js
+```
+
+ในแชท: `/scaffold <kind> <name>` (มี `[tool.pytest.ini_options] pythonpath=["."]` ใน pyproject — รัน test ได้ทันทีโดยไม่ต้องติดตั้ง). Agent ใช้ tool `scaffold`.
+
+### Context ฉลาดขึ้น — compact แบบ chunked
+
+`/compact` (และ auto-compact ตอน context เกิน `YOUSINI_MAX_TOKENS`) เปลี่ยนเป็นการสรุป **แบบแบ่งส่วน** — ตัดข้อความเก่าเป็น chunk (~6 ข้อความ/2500 ตัวอักษร) สรุปทีละ chunk ก่อนรวม — ลดโทเค็นได้มากกว่าแบบเดิมมาก และไม่เกิน context ของโมเดลในรอบเดียว.
+
+### Dev tools — รวมตรวจโปรเจกต์
+
+```bash
+yousini dev all          # git status + ไวยากรณ์ Python + pytest + lint (ruff/flake8 ถ้ามี)
+yousini dev compile      # ตรวจ .py ทั้งหมด
+yousini dev test         # รัน pytest
+yousini dev status       # สถานะ git
+yousini dev lint         # ruff/flake8
+```
+
+ในแชท: `/dev [all|status|compile|test|lint]`. Agent ใช้ tool `dev_check` เพื่อยืนยันว่างานผ่านก่อนสรุป (เหมาะกับ TDD/หลัง refactor).
 
 ---
 
