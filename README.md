@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.3.0 | MIT | Python 3.10+ | English / Thai |
+| 3.4.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -148,6 +148,18 @@ pip install -e .
 ```
 
 The `pip install -e .` command installs the `yousini` console command and all required packages (`openai`, `rich`, `tree-sitter`, ...).
+
+**Option C — quick launcher (ไม่ต้อง pip install)**
+
+```bash
+# Windows
+python install.py
+
+# macOS / Linux
+python3 install.py
+```
+
+`install.py` สร้าง launcher ที่ `~/.yousini/bin` (`yousini.cmd` บน Windows / `yousini` script บน macOS·Linux) แล้วลง `~/.yousini/bin` เข้า PATH (user-level) ให้เรียก `yousini` ได้จากทุกที่. ตัวเลือก: `--pip` (ลงแบบ editable เหมือน Option A), `--uninstall` (เอาออก). ทดสอบได้ด้วย `yousini --version` หลังเปิดเทอร์มินัลใหม่. โฟลเดอร์ `.env` จะถูกหาอัตโนมัติจาก cwd → โฟลเดอร์ของโปรเจกต์ → home.
 
 ### Step 4 — Configure your API key
 

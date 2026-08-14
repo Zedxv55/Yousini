@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yousini"
-version = "3.3.0"
+version = "3.4.0"
 description = "Local Coding Agent สไตล์ Claude Code — shell, เขียน/แก้ไฟล์, web, serve, connect, MCP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,7 +27,25 @@ Repository = "https://github.com/Zedxv55/Yousini"
 yousini = "yousini:main"
 
 [tool.setuptools]
-py-modules = ["yousini"]
+py-modules = [
+    "yousini",
+    "yousini_billing",
+    "yousini_cron",
+    "yousini_git",
+    "yousini_lsp",
+    "yousini_marketplace",
+    "yousini_mcp",
+    "yousini_memory",
+    "yousini_sessions_db",
+    "yousini_skills",
+    "yousini_sponsor",
+    "yousini_symbols",
+    "yousini_team",
+    "yousini_telegram",
+    "yousini_usage",
+    "yousini_vision",
+    "yousini_webhook",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
