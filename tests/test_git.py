@@ -3,17 +3,19 @@ import os, sys, subprocess, shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from yousini_git import recent_log, blame, status_short, diff_stat, last_commits_block
+from yousini_git import recent_log, blame, status_short, diff_stat, last_commits_block, _git_bin
+
+GIT = _git_bin()
 
 
 @pytest.fixture(scope="module")
 def repo(tmp_path_factory):
     """สร้าง git repo จริงใน tmp — commit 2 ครั้ง แล้วแก้ไฟล์ 1 ครั้ง (dirty)"""
     root = tmp_path_factory.mktemp("gitrepo")
-    if shutil.which("git") is None:
+    if not GIT:
         pytest.skip("ไม่มี git บนเครื่อง")
     def g(*args):
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True)
+        return subprocess.run([GIT, "-C", str(root), *args], capture_output=True, text=True, check=True)
     g("init", "-b", "main", "-q")
     g("config", "user.email", "test@yousini.local")
     g("config", "user.name", "Tester")

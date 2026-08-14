@@ -8,6 +8,8 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 | --- | --- | --- | --- |
 | 3.7.0 | MIT | Python 3.10+ | English / Thai |
 
+[![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
+
 ---
 
 ## Table of Contents / สารบัญ
