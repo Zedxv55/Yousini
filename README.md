@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.0.0 | MIT | Python 3.10+ | English / Thai |
+| 3.1.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -22,6 +22,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Tools / เครื่องมือ](#tools--เครื่องมือ)
 - [Customization / การปรับแต่ง](#customization--การปรับแต่ง)
 - [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
+- [LSP Server / Code Intelligence](#lsp-server--code-intelligence)
 - [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
@@ -264,6 +265,7 @@ yousini connect https://yousini.example.com --token secret
 | `yousini serve` | Start web UI + SSE API |
 | `yousini connect <url>` | Connect to a remote instance |
 | `yousini mcp` | Expose Yousini as an MCP server (`--allow-exec` to enable shell/write) |
+| `yousini lsp` | Start the LSP server over stdio (`yousini lsp [root]`) |
 | `yousini mcp-add <name> <cmd>` | Add an external MCP server |
 | `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
 | `yousini login` | Interactive provider selection |
@@ -379,6 +381,55 @@ Place scripts in `.yousini/hooks` (or `~/.yousini/hooks`) to run around tool cal
 - **Plan mode** — `/plan` produces a step-by-step task plan before executing.
 - **Webhooks** — `yousini webhook-add <name> <prompt>` then `POST /api/webhook/<name>`.
 - **Telegram gateway** — run `yousini telegram` and chat from Telegram (set `YOUSINI_TG_TOKEN`).
+
+---
+
+## LSP Server / Code Intelligence
+
+Yousini ships a **Language Server Protocol** server (`yousini lsp`, stdio JSON-RPC 2.0) that editors can attach to for workspace code intelligence, backed by the tree-sitter symbol index:
+
+| Capability | What it does |
+| --- | --- |
+| `textDocument/hover` | Signature + source snippet of the symbol under the cursor |
+| `textDocument/definition` | Go-to-definition across the workspace |
+| `textDocument/references` | All usages of a symbol (definition + calls) |
+| `textDocument/documentSymbol` | Hierarchical outline of a file (classes / methods / functions) |
+| `workspace/symbol` | Search symbols by name across the project |
+| `textDocument/completion` | Identifier completion from workspace + current file |
+
+Supported languages match the symbol index: Python, JavaScript/TS, Go, C, Rust (regex fallback for others).
+
+```bash
+# เริ่ม LSP server ผ่าน stdio (editor/neovim/VS Code ตั้งให้ใช้เป็น language server ได้)
+yousini lsp              # root = โฟลเดอร์ปัจจุบัน
+yousini lsp /path/to/project
+```
+
+Neovim example (`init.lua`):
+
+```lua
+vim.api.nvim_create_autocmd('BufReadPost', {
+  pattern = { '*.py', '*.js', '*.ts' },
+  callback = function()
+    vim.lsp.start({
+      name = 'yousini',
+      cmd = { 'yousini', 'lsp' },
+      root_dir = vim.fn.getcwd(),
+    })
+  end,
+})
+```
+
+The same engine is exposed over HTTP in the web UI — open the **CODE · LSP** panel (icon `{ }` in the top bar) to run definition / references / hover / document symbols on any file:
+
+| Endpoint | Body |
+| --- | --- |
+| `POST /api/lsp/hover` | `{"file","line","character"}` |
+| `POST /api/lsp/definition` | `{"file","line","character"}` |
+| `POST /api/lsp/references` | `{"file","line","character"}` |
+| `POST /api/lsp/document-symbols` | `{"file"}` |
+| `POST /api/lsp/workspace-symbols` | `{"query"}` |
+| `GET /api/lsp/summary` | — |
 
 ---
 

@@ -245,6 +245,29 @@ textarea::placeholder{color:var(--faint)}
 .tl-entry .tl-txt b{color:var(--ink);font-weight:600}
 .tl-entry .tl-time{flex:none;font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:2px}
 .tl-empty{color:var(--faint);font-size:12.5px;text-align:center;padding:28px 18px;line-height:1.7}
+/* ---------- code intelligence panel (LSP) ---------- */
+.cd-body{flex:1;overflow-y:auto;padding:6px 16px 18px;display:flex;flex-direction:column;gap:12px}
+.cd-field{display:flex;flex-direction:column;gap:5px}
+.cd-field label{font-family:var(--mono);font-size:10px;letter-spacing:1.6px;color:var(--faint)}
+.cd-field input{background:var(--panel2);border:1px solid var(--stroke);border-radius:9px;color:var(--ink);
+  font-family:var(--mono);font-size:12px;padding:8px 10px;outline:0;transition:border-color .18s, box-shadow .18s}
+.cd-field input:focus{border-color:rgba(157,107,255,.6);box-shadow:0 0 0 3px rgba(109,94,248,.14)}
+.cd-actions{display:flex;gap:7px;flex-wrap:wrap}
+.cd-btn{flex:1;min-width:92px;padding:8px 6px;border:1px solid var(--stroke);border-radius:9px;cursor:pointer;
+  background:var(--panel2);color:var(--dim);font-family:var(--mono);font-size:11px;transition:.16s}
+.cd-btn:hover{color:var(--acc2);border-color:rgba(157,107,255,.5);background:rgba(157,107,255,.08)}
+.cd-btn:active{transform:scale(.96)}
+.cd-result{display:flex;flex-direction:column;gap:8px;animation:riseIn .25s ease}
+.cd-hit{border:1px solid var(--stroke);border-radius:10px;padding:9px 11px;background:var(--panel2);animation:riseIn .22s ease}
+.cd-hit .cd-loc{font-family:var(--mono);font-size:10.5px;color:var(--acc2);margin-bottom:4px;word-break:break-all}
+.cd-hit .cd-txt{font-family:var(--mono);font-size:11.5px;color:var(--dim);line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.cd-hit.cd-def{border-color:rgba(83,212,170,.5);box-shadow:0 0 0 3px rgba(83,212,170,.08)}
+.cd-tree{font-family:var(--mono);font-size:11.5px;color:var(--dim);line-height:1.7}
+.cd-tree .cd-node{cursor:pointer;border-radius:6px;padding:2px 6px;transition:background .14s}
+.cd-tree .cd-node:hover{background:rgba(157,107,255,.1)}
+.cd-tree .cd-k{color:var(--acc2);margin-right:6px}
+.cd-tree .cd-n{color:var(--ink)}
+.cd-hovermd{font-size:12.5px;color:var(--dim)}
 @media(max-width:640px){
   .app{padding:0 12px}
   .user .bubble{max-width:92%}
@@ -272,6 +295,9 @@ textarea::placeholder{color:var(--faint)}
         <path d="M7 4h6M7 8h6M7 12h6"/>
       </svg>
       <span class="badge" id="tlBadge">0</span>
+    </button>
+    <button class="icon-btn" id="codeBtn" title="Code intelligence (LSP)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4 2 8l3 4M11 4l3 4-3 4M9 2.5 7 13.5"/></svg>
     </button>
     <button class="icon-btn" id="themeBtn" title="สลับธีม">
       <svg class="theme-ic icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -320,13 +346,32 @@ textarea::placeholder{color:var(--faint)}
   <div class="tl-head"><span>ACTIVITY</span><span class="tl-count" id="tlCount">0</span></div>
   <div class="tl-body" id="tlBody"><div class="tl-empty" id="tlEmpty">ยังไม่มีกิจกรรม — เริ่มส่งข้อความเพื่อดูบันทึกการทำงาน</div></div>
 </aside>
+<aside class="tl cd" id="codePanel">
+  <div class="tl-head"><span>CODE · LSP</span><span class="tl-count">3.0</span></div>
+  <div class="cd-body">
+    <div class="cd-field"><label>FILE</label>
+      <input id="cdFile" spellcheck="false" placeholder="เช่น yousini.py หรือ src/app.ts"></div>
+    <div class="cd-field"><label>SYMBOL</label>
+      <input id="cdSym" spellcheck="false" placeholder="เช่น load_config (hover / def / refs)"></div>
+    <div class="cd-actions">
+      <button class="cd-btn" data-act="definition">Definition</button>
+      <button class="cd-btn" data-act="references">References</button>
+      <button class="cd-btn" data-act="hover">Hover</button>
+      <button class="cd-btn" data-act="document-symbols">Symbols</button>
+    </div>
+    <div class="cd-result" id="cdResult">
+      <div class="tl-empty">ระบุไฟล์ แล้วกดปุ่มเพื่อค้นหา — definition / references / hover / document symbols</div>
+    </div>
+  </div>
+</aside>
 
 <script>
 /* ---------- util ---------- */
 const chat=document.getElementById('chat'), input=document.getElementById('input'),
       send=document.getElementById('send'), stopBtn=document.getElementById('stopBtn'),
       newBtn=document.getElementById('newBtn'), tlBtn=document.getElementById('tlBtn'),
-      themeBtn=document.getElementById('themeBtn'), tlPanel=document.getElementById('tlPanel');
+      themeBtn=document.getElementById('themeBtn'), tlPanel=document.getElementById('tlPanel'),
+      codeBtn=document.getElementById('codeBtn'), codePanel=document.getElementById('codePanel');
 const $=id=>document.getElementById(id);
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -370,8 +415,99 @@ function toggleTimeline(force){
   if(open)$('tlBody').scrollTop=$('tlBody').scrollHeight;
 }
 tlBtn.onclick=()=>toggleTimeline();
-$('scrim').onclick=()=>toggleTimeline(false);
-document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleTimeline(false)});
+function closePanels(){toggleTimeline(false);toggleCode(false)}
+$('scrim').onclick=closePanels;
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
+
+/* ---------- code intelligence (LSP) ---------- */
+function toggleCode(force){
+  const open=force!==undefined?force:!codePanel.classList.contains('open');
+  codePanel.classList.toggle('open',open);
+  $('scrim').classList.toggle('on',open);
+  codeBtn.classList.toggle('active',open);
+  if(open){toggleTimeline(false);$('cdFile').focus()}
+}
+codeBtn.onclick=()=>toggleCode();
+
+async function lspCall(method,payload){
+  const res=await fetch('api/lsp/'+method,{method:'POST',
+    headers:{'Content-Type':'application/json','X-Yousini-Token':TOKEN},
+    body:JSON.stringify(payload)});
+  if(res.status===401){
+    const t=prompt('เซิร์ฟเวอร์กำหนดให้ต้องใช้ token:');if(t){TOKEN=t;localStorage.setItem('yousini_token',t)}
+    return lspCall(method,payload);
+  }
+  if(!res.ok)throw new Error('HTTP '+res.status);
+  return res.json();
+}
+function cdSymKind(k){const m={'5':'CLASS','6':'METHOD','7':'FIELD','12':'FUNCTION','13':'VARIABLE','14':'CONSTANT','23':'STRUCT'};return m[String(k)]||'SYM'}
+function cdLoc(uri,line){
+  const m=String(uri).match(/[^/]+\.\w+$/);return (m?m[0]:uri)+':'+(line+1);
+}
+function cdHit(uri,line,txt,cls){
+  const d=document.createElement('div');d.className='cd-hit'+(cls?' '+cls:'');
+  d.innerHTML='<div class="cd-loc">'+cdLoc(uri,line)+'</div>'+
+    (txt?'<div class="cd-txt">'+esc(txt)+'</div>':'');
+  return d;
+}
+function cdRender(act,data){
+  const out=$('cdResult');out.innerHTML='';
+  if(!data){out.innerHTML='<div class="tl-empty">ไม่พบสัญลักษณ์นั้นในโปรเจกต์</div>';return}
+  const add=x=>{out.appendChild(x);out.animate?out.animate([{opacity:0,transform:'translateY(6px)'},{opacity:1,transform:'none'}],{duration:200}):0};
+  if(act==='definition'){
+    add(cdHit(data.uri,data.range.start.line,'→ นิยามอยู่ที่นี่','cd-def'));
+  }
+  else if(act==='references'){
+    if(!data.length){out.innerHTML='<div class="tl-empty">ไม่มีการอ้างอิงอื่น</div>';return}
+    data.forEach(r=>add(cdHit(r.uri,r.range.start.line,r.text||'')));
+  }
+  else if(act==='hover'){
+    const d=document.createElement('div');d.className='cd-hit cd-def';
+    d.innerHTML='<div class="cd-loc">'+esc(data.kind)+' · '+cdLoc(data.location.uri,data.location.range.start.line)+'</div>'+
+      '<div class="cd-hovermd">'+md(data.markdown)+'</div>';
+    add(d);
+  }
+  else if(act==='document-symbols'){
+    if(!data.length){out.innerHTML='<div class="tl-empty">ไม่มีสัญลักษณ์ในไฟล์นี้</div>';return}
+    const tree=document.createElement('div');tree.className='cd-tree';
+    (function walk(items,depth){
+      items.forEach(s=>{
+        const pad=''.padStart(depth*2);
+        const row=document.createElement('div');row.className='cd-node';row.style.paddingLeft=(4+depth*14)+'px';
+        row.innerHTML=pad+'<span class="cd-k">'+cdSymKind(s.kind)+'</span><span class="cd-n">'+esc(s.name)+'</span>';
+        row.title=cdLoc(null,s.selectionRange.start.line);
+        row.onclick=()=>{$('cdFile').value=cdFileValue();$('cdSym').value=s.name;cdAction('definition')};
+        tree.appendChild(row);
+        if(s.children&&s.children.length)walk(s.children,depth+1);
+      });
+    })(data,0);
+    add(tree);
+  }
+  tl('info','Code intelligence — <b>'+act+'</b> บน <b>'+esc($('cdFile').value||'—')+'</b>');
+}
+function cdFileValue(){return $('cdFile').value.trim()}
+async function cdAction(act){
+  const file=cdFileValue();
+  if(!file)return;
+  const out=$('cdResult');out.innerHTML='<div class="tl-empty">กำลังค้นหา...</div>';
+  const sym=$('cdSym').value.trim();
+  try{
+    const payload={file};
+    if(act!=='document-symbols'){payload.line=0;payload.character=0}
+    const r=await lspCall(act,payload);
+    let data=null;
+    if(act==='definition'){data=r.ok?r.result:null;if(r.ok&&!data&&sym){const rs=await lspCall('references',{file});if(rs.ok&&rs.references.length){data=rs.references[0]}}}
+    else if(act==='references')data=r.ok?r.references:null;
+    else if(act==='hover')data=r.ok?r.result:null;
+    else data=r.ok?r.symbols:null;
+    cdRender(act,data);
+  }catch(e){
+    out.innerHTML='<div class="tl-empty" style="color:var(--err)">ผิดพลาด: '+esc(e.message)+'</div>';
+  }
+}
+document.querySelectorAll('.cd-btn').forEach(b=>b.onclick=()=>cdAction(b.dataset.act));
+$('cdSym').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();cdAction('definition')}});
+$('cdFile').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();cdAction('document-symbols')}});
 
 /* ---------- syntax highlight ---------- */
 const KW={

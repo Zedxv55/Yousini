@@ -2658,12 +2658,43 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
     import http.server
     import socketserver
     import threading
+    from yousini_lsp import LSPEngine, _path_to_uri
 
     web_ui = _load_webui()
     sessions = {}          # sid -> Agent
     locks = {}             # sid -> Lock (กันรันทับกันในเซสชันเดียว)
     reg_lock = threading.Lock()
     store = SessionStore(SESSION_DIR)
+    lsp = LSPEngine(root=str(Path.cwd()))
+
+    def resolve_file(file: str):
+        p = Path(file or "")
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        return p.resolve()
+
+    def lsp_json_ok(method: str, payload: dict):
+        """รัน LSP query ผ่าน HTTP → dict JSON (รับทั้ง stdio editor และ web UI)"""
+        try:
+            if method == "summary":
+                return {"ok": True, "result": lsp.summary()}
+            if method == "workspace-symbols":
+                return {"ok": True, "symbols": lsp.workspace_symbols(payload.get("query", ""))}
+            path = resolve_file(payload.get("file", ""))
+            uri = _path_to_uri(path)
+            line = int(payload.get("line", 0))
+            char = int(payload.get("character", 0))
+            if method == "hover":
+                return {"ok": True, "result": lsp.hover(uri, line, char)}
+            if method == "definition":
+                return {"ok": True, "result": lsp.definition(uri, line, char)}
+            if method == "references":
+                return {"ok": True, "references": lsp.references(uri, line, char)}
+            if method == "document-symbols":
+                return {"ok": True, "symbols": lsp.document_symbols(uri)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"method ไม่รู้จัก: {method}"}
 
     def get_agent(sid):
         with reg_lock:
@@ -2739,11 +2770,30 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                            "application/json; charset=utf-8")
             elif path == "/health":
                 self._send(200, "ok")
+            elif path == "/api/lsp/summary":
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                self._send(200, json.dumps(lsp_json_ok("summary", {}), ensure_ascii=False),
+                           "application/json; charset=utf-8")
             else:
                 self._send(404, "not found")
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/api/lsp/"):
+                if not self._auth_ok():
+                    return self._send(401, json.dumps({"error": "unauthorized"}),
+                                      "application/json; charset=utf-8")
+                method = path[len("/api/lsp/"):].strip("/")
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    payload = json.loads(self.rfile.read(length) or "{}")
+                except Exception:
+                    payload = {}
+                return self._send(200, json.dumps(lsp_json_ok(method, payload),
+                                                  ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             if path.startswith("/api/webhook/"):
                 name = path[len("/api/webhook/"):].strip("/")
                 if not self._auth_ok():
@@ -2948,6 +2998,13 @@ def _tools_to_mcp():
             "inputSchema": f["parameters"],
         })
     return out
+
+
+def lsp_main(root: str = "."):
+    """LSP server แบบ stdio JSON-RPC 2.0 (Content-Length framing) สำหรับ editor
+    สำคัญ: stdout ต้องสะอาดสำหรับ JSON-RPC เท่านั้น จึงเขียน log ไป stderr"""
+    from yousini_lsp import lsp_main as _lsp_run
+    _lsp_run(root=root)
 
 
 def mcp_main(allow_exec: bool = False):
@@ -3489,6 +3546,13 @@ def main():
     if argv and argv[0] == "mcp":
         o = _parse_flags(argv[1:])
         mcp_main(allow_exec=bool(o.get("allow-exec")))
+        return
+
+    # ---- subcommand: lsp ----
+    if argv and argv[0] == "lsp":
+        o = _parse_flags(argv[1:])
+        targets = o.get("_", [])
+        lsp_main(root=targets[0] if targets else ".")
         return
 
     # ---- subcommand: login ----
