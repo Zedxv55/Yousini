@@ -1,175 +1,195 @@
 # Yousini
 
-Local Coding Agent สไตล์ Claude Code — รับคำสั่งภาษาธรรมชาติ แล้วทำงานบนเครื่องจริงได้เอง:
-รัน shell, อ่าน/เขียน/แก้ไฟล์, ค้นหาไฟล์ **และเชื่อมต่อได้ทั้งในเครื่องและออนไลน์** ผ่านทุก OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral ฯลฯ)
+**Yousini** is a local, terminal-based coding agent inspired by Claude Code. It runs entirely on your machine and connects to any OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral and more). It can run shell commands, read and write files, search the web, manage memory and sessions, expose a web UI, and integrate with other agents through MCP.
 
-- 🖥️ **CLI สวยงาม** — banner ไล่สี, สตรีมสด, diff สี, syntax highlight
-- 🌐 **serve** — เปิดเป็นเว็บ UI + API (SSE) คุยผ่านเบราว์เซอร์ได้ + เก็บ session ลงดิสก์ข้าม restart
-- 🔗 **connect** — CLI เครื่องหนึ่งคุยกับ Yousini เครื่องอื่น/บริการอื่นผ่านเน็ตได้
-- 🛡️ มีระบบกันคำสั่งอันตราย + ขออนุมัติก่อนรัน/เขียนไฟล์
-- 📌 **YOUSINI.md** — บริบทโปรเจกต์ถาวร (เหมือน CLAUDE.md) โหลดอัตโนมัติทุกครั้ง
-- 🧩 **Skills** — โหลด `skills/*.md` เข้า system prompt อัตโนมัติ
-- 🪝 **Hooks** — `pre_tool`/`post_tool` script ตัดสินว่าจะรัน tool ไหม (config ได้)
-- 💾 **Session persistence** — `/save` `/load` `/sessions` บันทึกบทสนทนาลงดิสก์
-- ⏳ **Background shell** — รันคำสั่งยาวแบบไม่บล็อก (`run_in_background`) + `/jobs`
-- 🔖 **Checkpoint/Rollback** — auto `git commit` ก่อนแก้ไฟล์ แล้ว `/rollback` ได้
-- 🔌 **MCP server** — `yousini mcp` ครอบ tools เป็น MCP server ให้ agent ภายนอกเรียกได้
-- 🧠 **ความจำระยะยาว (v2)** — จำความชอบ/ข้อเท็จจริง/บทเรียนข้าม session (`memory` tool, `/memory`)
-- 🛠️ **Self-improvement (v2)** — agent สร้าง/แก้ไขสกิลเองได้ (`skill_create` / `skill_patch`)
-- 🔍 **ค้นหา session ย้อนหลัง (v2)** — SQLite+FTS5, `/search <คำ>` รองรับภาษาไทย
-- ⌚ **Cron jobs (v2)** — งานอัตโนมัติตามเวลา `yousini cron` + `/cron`
-- 🔀 **Provider fallback (v2)** — โค้ต้าหมด/API ล่ม → สลับ provider สำรองอัตโนมัติ
-- 🔌 **MCP client (v2)** — โหลดเครื่องมือจาก MCP server ภายนอก (`mcp__<server>__<tool>`)
-- 📨 **Webhooks (v2)** — `POST /api/webhook/<ชื่อ>` ให้ระบบภายนอกสั่ง agent ทำงาน
-- 💬 **Telegram gateway (v2)** — คุยกับ Yousini ผ่าน Telegram bot
-- 👥 **Profiles (v2)** — แยก config/session/ความจำ/สกิล ต่อโพรไฟล์
+Yousini is a terminal coding agent ที่รันในเครื่องของคุณเอง ทำงานร่วมกับ API ที่รองรับรูปแบบ OpenAI (Groq, OpenAI, OpenRouter, DeepSeek, Mistral และอื่น ๆ) มีความสามารถในการรันคำสั่ง shell, อ่าน/เขียน/แก้ไขไฟล์, ค้นหาเว็บ, จัดการความจำและ session, มี Web UI และเชื่อมต่อกับ agent อื่นผ่าน MCP
 
-พัฒนาต่อยอดจากหนังสือ *ai-agent-book* (bojieli) โดยใช้ความสามารถ Tool Calling
+| Version | License | Language | Python |
+| --- | --- | --- | --- |
+| 2.1.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
-## ✨ v2.1 — Code Intelligence + Vision + Design
+## Table of Contents / สารบัญ
 
-| ความสามารถ | วิธีใช้ |
-|---|---|
-| ความจำระยะยาว (จำข้าม session) | tool `memory` ในแชท หรือ `/memory add|list user\|agent ...` |
-| self-improvement (สร้าง/แก้สกิลเอง) | tools `skill_create` / `skill_patch` |
-| ค้นหา session ย้อนหลัง (ไทย + อังกฤษ) | `/search <คำ>` |
-| Cron jobs งานอัตโนมัติ | `/cron add 30m <prompt>`, `yousini cron [--once]` |
-| Provider fallback (สำรองโค้ต้า) | ใส่ `YOUSINI_FALLBACK_PROVIDERS=[{"base_url":"...","api_key":"..."}]` ใน .env — ดู `/providers` |
-| MCP client | `yousini mcp-add <ชื่อ> <คำสั่ง>` → เครื่องมือขึ้น `mcp__<ชื่อ>__<tool>` |
-| Webhooks | `yousini webhook-add <ชื่อ> <prompt> [--callback <url>]` → `POST /api/webhook/<ชื่อ>` |
-| Telegram gateway | `yousini telegram` (ตั้ง `YOUSINI_TG_TOKEN`) |
-| Profiles (แยกข้อมูลต่อโพรไฟล์) | `yousini profile <ชื่อ>` / `YOUSINI_PROFILE=<ชื่อ>` |
-| 🔍 **Code intelligence (AST)** | tool `symbols` / `/symbols def|refs|list` — tree-sitter symbol index + go-to-definition |
-| 🌿 **Git awareness** | tool `git` / `/git log|full|status|diff|blame` — ประวัติ commit ถูก inject เข้า context อัตโนมัติ |
-| 👁️ **Vision/Image input** | พิมพ์ `[img:path.png] คำถาม` หรือ `/img` — base64 content block (โมเดล vision เช่น `mistral-large-latest`) |
-| 🖥️ **Web UI สไตล์ Codex** | `yousini serve` → จอ console: status bar, tool-call timeline, RUN button |
+- [Overview / ภาพรวม](#overview--ภาพรวม)
+- [Features / คุณสมบัติ](#features--คุณสมบัติ)
+- [Installation / การติดตั้ง](#installation--การติดตั้ง)
+- [Configuration / การตั้งค่า](#configuration--การตั้งค่า)
+- [Quick Start / เริ่มต้นใช้งาน](#quick-start--เริ่มต้นใช้งาน)
+- [CLI Commands / คำสั่ง](#cli-commands--คำสั่ง)
+- [Slash Commands / คำสั่งในแชท](#slash-commands--คำสั่งในแชท)
+- [Tools / เครื่องมือ](#tools--เครื่องมือ)
+- [Customization / การปรับแต่ง](#customization--การปรับแต่ง)
+- [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
+- [Security / ความปลอดภัย](#security--ความปลอดภัย)
+- [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
+- [License / สัญญาอนุญาต](#license--สัญญาอนุญาต)
 
 ---
 
-## เริ่มต้นใช้งาน
+## Overview / ภาพรวม
 
-เปิด terminal แล้วพิมพ์:
+Yousini gives you a Claude Code-style assistant inside your own terminal. It is a single-file Python agent with rich terminal UI (Rich), streaming responses, tool calling, session persistence and provider fallback.
+
+Yousini ให้คุณมีผู้ช่วยสไตล์ Claude Code ในเทอร์มินัลของคุณเอง เป็น Python agent ไฟล์เดียวพร้อม UI หรูหรา (Rich), การตอบสนองแบบ streaming, tool calling, การบันทึก session และการสลับ provider อัตโนมัติ
+
+Key capabilities / ความสามารถหลัก:
+
+- Interactive CLI with streaming Markdown, syntax highlighting and colored diffs
+- Web UI + SSE API via `yousini serve`
+- Remote control from another machine via `yousini connect`
+- MCP server and MCP client support
+- Persistent memory, searchable session history (SQLite + FTS5)
+- Auto git checkpoint / rollback
+- Background jobs, cron jobs, webhooks and a Telegram gateway
+- Code intelligence with tree-sitter (go-to-definition, symbol index) and git awareness
+
+---
+
+## Features / คุณสมบัติ
+
+| Area | Description / รายละเอียด |
+| --- | --- |
+| Terminal UI | Rich CLI with banner, streaming output, colored diff and syntax highlight |
+| Web UI | `yousini serve` launches a Codex-style web interface and SSE API on `http://localhost:8787` |
+| Remote connect | `yousini connect <url>` controls a running Yousini from the CLI |
+| Context file | `YOUSINI.md` acts like `CLAUDE.md` for persistent project instructions |
+| Skills | Markdown files in `skills/` are auto-loaded into the system prompt |
+| Hooks | `pre_tool` / `post_tool` / `session_start` / `session_stop` lifecycle scripts |
+| Sessions | `/save`, `/load`, `/sessions`, `yousini resume`, SQLite search with `/search` |
+| Memory | Long-term memory via the `memory` tool and `/memory` command |
+| Self-improvement | `skill_create` / `skill_patch` lets the agent create and update skills |
+| Background shell | Long-running commands with `run_in_background` and `/jobs` |
+| Checkpoint / Rollback | Auto `git commit` before edits, `/rollback` to restore |
+| MCP server | `yousini mcp` exposes Yousini tools to Claude Code and other MCP clients |
+| MCP client | `yousini mcp-add <name> <cmd>` connects to external MCP servers |
+| Provider fallback | Multiple API keys and automatic failover |
+| Cron jobs | Scheduled tasks with `yousini cron` and `/cron` |
+| Webhooks | `POST /api/webhook/<name>` triggers agent tasks |
+| Telegram gateway | Chat with Yousini from Telegram |
+| Profiles | Separate config, sessions and skills per profile |
+| Code intelligence | tree-sitter symbol index, go-to-definition and references |
+| Git awareness | `git` tool and `/git` command with recent commit context injection |
+| Vision | Image input via `[img:path.png]` or `/img` |
+
+---
+
+## Installation / การติดตั้ง
+
+### Prerequisites / สิ่งที่ต้องเตรียม
+
+- **Python 3.10 or newer** (ทดสอบบน Python 3.12)
+- An API key from any OpenAI-compatible provider
+- Git (recommended, for checkpoints and cloning)
+
+### Step 1 — Install Python
+
+**Windows**
+
+Download Python from [python.org](https://www.python.org/downloads/) and run the installer. In the first screen, check **"Add python.exe to PATH"** before installing.
+
+> Note: If you installed Python from the Microsoft Store, the `python` command may only open the Store page. Install from python.org instead and disable the "App execution alias" for Python in Windows Settings to avoid conflicts.
+
+> หมายเหตุ: หากติดตั้ง Python จาก Microsoft Store คำสั่ง `python` อาจเปิดหน้า Store เท่านั้น ให้ติดตั้งจาก python.org และปิด "App execution alias" สำหรับ Python ในการตั้งค่า Windows
+
+**macOS / Linux**
+
+```bash
+# macOS (Homebrew)
+brew install python git
+
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip git
+
+# Arch Linux
+sudo pacman -S python python-pip git
+```
+
+Verify / ตรวจสอบ:
+
+```bash
+python --version
+git --version
+```
+
+### Step 2 — Clone the repository
+
+```bash
+git clone https://github.com/Zedxv55/Yousini.git
+cd Yousini
+```
+
+### Step 3 — Install dependencies
+
+**Option A — venv (recommended / แนะนำ)**
+
+```bash
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -e .
+```
+
+**Option B — install globally**
+
+```bash
+pip install -r requirements.txt
+pip install -e .
+```
+
+The `pip install -e .` command installs the `yousini` console command and all required packages (`openai`, `rich`, `tree-sitter`, ...).
+
+### Step 4 — Configure your API key
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and set `YOUSINI_API_KEY`, `YOUSINI_BASE_URL` and `YOUSINI_MODEL` (see [Configuration](#configuration--การตั้งค่า)).
+
+### Step 5 — Launch
 
 ```bash
 yousini
 ```
 
-หรือส่งคำสั่งหนึ่งรอบโดยตรง:
-
-```bash
-yousini "สร้างโฟลเดอร์ demo แล้วเขียนสคริปต์ Python พิมพ์สวัสดี และรันมัน"
-```
+On Windows you can also double-click `yousini.cmd`, which auto-detects a working Python interpreter.
 
 ---
 
-## โหมดเชื่อมต่อ (ใหม่!)
+## Configuration / การตั้งค่า
 
-### เปิดเป็นบริการ (เว็บ UI + API)
+Copy `.env.example` to `.env` and fill in your provider details:
 
-```bash
-yousini serve                       # เปิดที่ http://localhost:8787 (ในเครื่อง)
-yousini serve --host 0.0.0.0 --token รหัสลับ   # เปิดออนไลน์พร้อม token ป้องกัน
-yousini serve --safe                # แบบอ่านอย่างเดียว (ปิด shell / เขียนไฟล์)
-yousini serve --port 9000 --no-shell
-```
+| Variable | Description / รายละเอียด | Default |
+| --- | --- | --- |
+| `YOUSINI_API_KEY` | API key of your provider (required) | - |
+| `YOUSINI_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
+| `YOUSINI_MODEL` | Model name | `openai/gpt-oss-120b` |
+| `AUTO_RUN` | `1` = run shell commands without confirmation | `0` |
+| `CONFIRM_FILES` | `0` = edit files without confirmation | `1` |
+| `SHELL_TIMEOUT` | Default shell timeout in seconds | `60` |
+| `YOUSINI_CONTEXT` | Context file loaded into the system prompt | `YOUSINI.md` |
+| `YOUSINI_SKILLS` | Skills directory | `skills` |
+| `YOUSINI_CHECKPOINT` | `1` = auto git checkpoint before edits | `1` |
+| `YOUSINI_HOOKS` | Hooks directory | `./.yousini/hooks` |
+| `YOUSINI_SESSIONS` | Session storage directory | `~/.yousini/sessions` |
+| `YOUSINI_SEARCH_PROVIDER` | Web search provider: `brave`, `serpapi`, `tavily` | _(empty)_ |
+| `BRAVE_API_KEY` | Brave Search API key (default web search provider) | - |
+| `YOUSINI_FALLBACK_PROVIDERS` | JSON array of `{"base_url","api_key"}` for failover | `[]` |
+| `YOUSINI_TG_TOKEN` | Telegram bot token (for the gateway) | - |
+| `YOUSINI_TG_CHAT_ID` | Allowed Telegram chat id | - |
+| `YOUSINI_PROFILE` | Active profile name | `default` |
+| `YOUSINI_MAX_TOKENS` | Context window budget | `12000` |
+| `YOUSINI_COMPACT_RATIO` | Auto-compact trigger ratio | `0.8` |
 
-เปิดเบราว์เซอร์ไปที่ `http://localhost:8787/` จะเจอเว็บแชทสวยงาม แชทได้เลย
-โปรแกรมอื่นเรียก API ได้ที่ `POST /api/chat` แบบ Server-Sent Events (ดูตัวอย่างด้านล่าง)
-
-### เชื่อมต่อ CLI ข้ามเครื่อง
-
-```bash
-yousini connect http://10.0.0.5:8787          # คุยกับ Yousini เครื่องอื่น
-yousini connect https://yousini.example.com --token รหัสลับ
-```
-
-ทำให้ CLI สองเครื่อง "คุยกัน" ได้ — ในเครื่องหรือออนไลน์
-
----
-
-## ความสามารถหลัก
-
-- ความจำข้าม turn — Agent จำบริบทการสนทนาได้ตลอดเซสชัน (มี trimming กันบริบทยาวเกิน และกัน tool-result ลอยๆ)
-- Streaming จริง — ตอบสดพร้อมเรนเดอร์ Markdown สดๆ ระหว่างโมเดลพิมพ์
-- UI สไตล์ Claude Code — ใช้ `⏺` (การกระทำ) กับ `⎿` (ผลลัพธ์)
-- Banner ASCII ไล่สี magenta→cyan อลังการ
-- Diff สี เขียว/แดง ก่อนยืนยันเขียน/แก้ไฟล์ทุกครั้ง
-- Syntax highlighting ตามนามสกุลไฟล์ตอนอ่าน
-- คำสั่ง `/clear` `/history` `/help` + arrow-key history ข้ามเซสชัน (readline)
-
----
-
-## ตัวอย่างหน้าจอ (UX/UI CLI)
-
-```text
- __   __  _______  __   __  _______  ___   __    _  ___
-|  | |  ||       ||  | |  ||       ||   | |  |  | ||   |
-|  |_|  ||   _   ||  | |  ||  _____||   | |   |_| ||   |
-|       ||  | |  ||  |_|  || |_____ |   | |       ||   |
-|_     _||  |_|  ||       ||_____  ||   | |  _    ||   |
-  |   |  |       ||       | _____| ||   | | | |   ||   |
-  |___|  |_______||_______||_______||___| |_|  |__||___|
-
-  พร้อมทำงาน  ·  ทำงานบนเครื่องจริง + ออนไลน์  ·  เชื่อมต่อข้ามเครื่องได้
-
-❯ สร้างไฟล์ hello.py ที่พิมพ์สวัสดี แล้วรัน
-กำลังคิด…
-⏺ write_file({"path": "hello.py", "content": "print('สวัสดี')"})
-╭───────────────────────── สร้างไฟล์: hello.py ─────────────────────────╮
-│ print('สวัสดี')                                                       │
-╰──────────────────────────────────────────────────────────────────────╯
-⎿ เขียนสำเร็จ: hello.py (15 ตัวอักษร)
-⏺ shell(python3 hello.py)
-⎿ [exit code: 0]
-สวัสดี
-```
-
-### ตัวอย่างหน้าจอ (Web UI — `yousini serve`)
-
-เบราว์เซอร์แชทไดนามิก: พื้น aurora เคลื่อนไหว, ฟองแชทแก้ว (glass), ชิปแสดง tool-call สีฟ้า
-ขณะ agent ทำงาน จะเห็น `⏺ shell(...)` โผล่ขึ้นทีละอันพร้อมผลลัพธ์สดแบบสตรีม
-
-### เรียก API จากโปรแกรมอื่น (SSE)
-
-```bash
-curl -N -X POST http://localhost:8787/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"สร้างเว็บ hello world","session":"demo"}'
-# จะได้ stream: data: {"type":"token","text":"..."} ทีละท่อน
-```
-
----
-
-## ตั้งค่า (Configuration)
-
-ไฟล์ `.env` (มีให้แล้วในเครื่องนี้ พร้อม key) ถ้าเอาไปเครื่องอื่น ให้คัดลอกจากเทมเพลต:
-
-```bash
-cp .env.example .env
-# แล้วใส่ YOUSINI_API_KEY ใน .env
-```
-
-ตัวแปรใน `.env`:
-
-| ตัวแปร | คำอธิบาย | ค่าแนะนำ |
-|---|---|---|
-| `YOUSINI_API_KEY` | API Key จาก provider ที่เลือก | — |
-| `YOUSINI_BASE_URL` | Endpoint (OpenAI-compatible) | `https://api.groq.com/openai/v1` |
-| `YOUSINI_MODEL` | โมเดลที่ใช้ | `openai/gpt-oss-120b` |
-| `AUTO_RUN` | `1`=รัน shell ทันทีไม่ถาม (อันตราย) | `0` |
-| `CONFIRM_FILES` | `0`=เขียนไฟล์ไม่ต้องถาม | `1` |
-| `SHELL_TIMEOUT` | ตัดคำสั่งค้างที่ (วินาที) | `60` |
-| `YOUSINI_SEARCH_PROVIDER` | เสิร์ชผ่าน API จริงแทน scraping: `brave` / `serpapi` / `tavily` (เว้นว่าง = ใช้ `BRAVE_API_KEY` หากมี ไม่เช่นนั้น fallback scraping) | _(ว่าง)_ |
-| `BRAVE_API_KEY` | Brave Search API key (ฟรี 2,000 calls/mo) — **default** สำหรับ web_search หากตั้งไว้ | — |
-| `YOUSINI_SEARCH_API_KEY` (หรือ `SERPAPI_KEY` / `TAVILY_API_KEY`) | คียกอื่น ๆ (จะถูกใช้หากตั้ง `YOUSINI_SEARCH_PROVIDER`) | — |
-
-> เข้ากันได้กับของเดิม: หากไม่มี `YOUSINI_*` จะตกไปอ่าน `ZELAX_*` หรือ `GROQ_*` เป็น fallback ให้ย้ายมาใช้ `YOUSINI_*` ได้ทันที
-
-### เปลี่ยน Provider / โมเดล
-
-Yousini เปิดรับทุก OpenAI-compatible API ไม่ผูกกับ Groq เพียงแก้ `YOUSINI_BASE_URL` / `YOUSINI_API_KEY` / `YOUSINI_MODEL` (ดูตัวอย่างใน `.env.example`):
+### Example providers / ตัวอย่าง provider
 
 ```bash
 # OpenAI
@@ -177,7 +197,7 @@ YOUSINI_BASE_URL=https://api.openai.com/v1
 YOUSINI_API_KEY=sk-...
 YOUSINI_MODEL=gpt-4o
 
-# OpenRouter (Claude / Gemini / Llama ฯลฯ)
+# OpenRouter (Claude, Gemini, Llama and more)
 YOUSINI_BASE_URL=https://openrouter.ai/api/v1
 YOUSINI_API_KEY=sk-or-...
 YOUSINI_MODEL=anthropic/claude-3.5-sonnet
@@ -186,202 +206,231 @@ YOUSINI_MODEL=anthropic/claude-3.5-sonnet
 YOUSINI_BASE_URL=https://api.deepseek.com/v1
 YOUSINI_API_KEY=sk-...
 YOUSINI_MODEL=deepseek-chat
+
+# Mistral
+YOUSINI_BASE_URL=https://api.mistral.ai/v1
+YOUSINI_API_KEY=...
+YOUSINI_MODEL=mistral-large-latest
+
+# Groq (default)
+YOUSINI_BASE_URL=https://api.groq.com/openai/v1
+YOUSINI_API_KEY=gsk_...
+YOUSINI_MODEL=openai/gpt-oss-120b
 ```
 
-หรือเปลี่ยนโมเดลทันทีในแชทด้วย `/model <ชื่อ>`
+You can also switch the model inside a session with `/model <name>`.
 
 ---
 
-## เครื่องมือ (Tools)
+## Quick Start / เริ่มต้นใช้งาน
 
-| เครื่องมือ | ทำอะไร |
-|---|---|
-| `shell` | รันคำสั่ง bash บนเครื่อง |
-| `read_file` | อ่านไฟล์ (syntax highlight) |
-| `write_file` | สร้าง/เขียนทับไฟล์ (แสดง diff ก่อน) |
-| `edit_file` | แก้ข้อความในไฟล์ (search & replace, แสดง diff ก่อน) |
-| `list_dir` | แสดงไฟล์ในโฟลเดอร์ |
-| `glob` | หาไฟล์ตามรูปแบบ `*.py` |
-| `grep` | ค้นหาข้อความ (regex) |
-| `web_fetch` | ดึงเนื้อหาเว็บจาก URL (ออนไลน์) |
-| `web_search` | ค้นหาข้อมูลบนอินเทอร์เน็ต (ออนไลน์) |
-| `set_cwd` | เปลี่ยนโฟลเดอร์ทำงาน |
-| `ask_user` | ถามผู้ใช้ (เมื่อขาดข้อมูลสำคัญเท่านั้น) |
-| `load_skill` | โหลดเนื้อหาเต็มของสกิลตามชื่อ (lazy-load — ไม่กิน context ถ้าไม่ได้ใช้) |
-| `run_python` | รันโค้ด Python บนเครื่อง (คำนวณ/ประมวลผล/ทดสอบ snippet) |
-| `spawn_subagent` | รันเอเจนต์ย่อยแยกบริบท เพื่อทำงานเฉพาะส่วนแล้วคืนสรุป (ไม่ทำให้บริบทหลักบวม) |
-| `manage_todos` | จัดการรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า) โชว์แผนงานให้ผู้ใช้เห็นก่อนลงมือ |
-| `batch_edit_files` | แก้หลายไฟล์พร้อมกัน + commit อะตอมิก (เหมาะ refactor ใหญ่) |
-| `run_test_loop` | รัน test แล้วแก้ไขอัตโนมัติซ้ำ (TDD auto-fix loop) |
-
----
-
-### 🎨 UX/UI — แยกสีชัดเจน (คิด=เทา, ตอบ=เน้นสี)
-
-Yousini ออกแบบหน้าจอตามหลักความหมายสี (semantic colors) เพื่อให้ปลอดภัยและอ่านง่าย:
-
-- **⠿ กำลังคิด / เตรียมเครื่องมือ / ผลลัพธ์เครื่องมือ** → สี**เทา** (muted) ไม่เด่น
-- **คำตอบ** → กรอบ**เน้นสี** (แบนเนอร์ "คำตอบ Yousini") แยกจากช่วงคิดชัดเจน
-- **⏺ เรียกเครื่องมือ** → ฟ้า · **✅ สำเร็จ** → เขียว · **⚠ ต้องยืนยัน** → เหลือง · **🚫 อันตราย/ผิดพลาด** → แดง
-- **แถบสถานะล่าง (เทา)** แสดง: โมเดล · จำนวนรอบสนทนา · โทเค็นสะสม (in/out) — ช่วยผู้ใช้รู้สถานะตลอดเวลา
-- หน้าขออนุมัติ shell/เขียน/แก้ไฟล์ โชว์คำสั่งในกล่อง พร้อมตัวเลือก `y / N / e` ชัดเจน (คำสั่งเสี่ยงโชว์กล่องแดง)
-
-คำสั่งที่เพิ่มสำหรับจัดการงาน:
-
-- `/todos` — โชว์รายการสิ่งที่ต้องทำ (agent ใช้ `manage_todos` อัปเดตให้อัตโนมัติ)
-- `/compact` — ยุบบริบทเก่าเป็นสรุปสั้นๆ ลดโทเค็น (เหมาะตอนสนทนายาว, ช่วยโมเดลฟรี)
-
-## ความปลอดภัย
-
-ตัวนี้รันคำสั่งบนเครื่องคุณได้จริง จึงมีระบบป้องกัน:
-
-- ขออนุมัติก่อนรัน shell — แสดงคำสั่ง ถาม `รัน? [y/N/e=แก้ไข]` (พิมพ์ `e` แก้ก่อนรัน)
-- กันคำสั่งอันตราย — `rm -rf`, `dd`, `shutdown` ฯลฯ เตือน + ขออนุมัติเสมอ (ในโหมด headless/server จะบล็อกเด็ดขาด)
-- ขออนุมัติก่อนเขียน/แก้ไฟล์ (แสดง diff สี)
-- หากโมเดลสร้าง tool call พัง ระบบจะขอคำตอบแบบปกติแทน (ไม่ crash)
-- โหมด `serve --safe` หรือ `--no-shell`/`--no-write` ปิดความสามารถที่อาจอันตรายได้
-
----
-
-## คำสั่งในแชท
-
-- `/help` — แสดงคำสั่งทั้งหมด (รวมโหมด serve / connect / mcp)
-- `/clear` — ล้างประวัติการสนทนา
-- `/history` — แสดงประวัติข้อความทั้งหมด
-- `/approve on` — รัน shell ทันทีโดยไม่ถาม (เร็วแต่ระวัง)
-- `/approve off` — กลับไปถามก่อนรัน (ค่าเริ่มต้น แนะนำ)
-- `/reload` — โหลด `YOUSINI.md` + `skills/` ใหม่ (เมื่อแก้ไฟล์บริบทระหว่างทาง)
-- `/skills` — แสดงสกิลที่โหลดอยู่
-- `/hooks` — แสดงสถานะ hooks
-- `/cwd <โฟลเดอร์>` — เปลี่ยนที่ทำงาน
-- `/model <ชื่อ>` — เปลี่ยนโมเดล
-- `/save [ชื่อ]` — บันทึกบทสนทนาลงดิสก์
-- `/load [ชื่อ]` — โหลดบทสนทนาจากดิสก์
-- `/sessions` — แสดงรายการ session ที่บันทึกไว้
-- `/jobs` — แสดงงาน shell แบบ background ที่กำลังรัน/เสร็จแล้ว
-- `/checkpoint` — `git commit` จุดเก็บชั่วคราวเดี๋ยวนั้น
-- `/rollback` — ย้อนกลับไปจุด checkpoint ล่าสุด (git reset --hard)
-- `/exit` — ออก
-
----
-
-## ฟีเจอร์ขั้นสูง
-
-### 📌 บริบทโปรเจกต์ถาวร (YOUSINI.md)
-
-สร้างไฟล์ `YOUSINI.md` ในโฟลเดอร์โปรเจกต์ (ดู `YOUSINI.example.md`) — Agent จะโหลด
-อัตโนมัติทุกครั้งที่เริ่มงานในโฟลเดอร์นั้น (และโฟลเดอร์แม่ขึ้นไปจน root) รวมถึง
-`~/.yousini.md` ระดับเครื่อง ใช้จดกฎ/stack/convention ของโปรเจกต์
-
-### 🧩 Skills (`skills/*.md`)
-
-ทุกไฟล์ `.md` ในโฟลเดอร์ `skills/` (relative ต่อ cwd) จะถูก**สแกนเฉพาะชื่อ+คำอธิบาย**
-โหลดเข้า system prompt (ไม่โหลดเนื้อหาเต็ม) เพื่อไม่ให้ context บวมเมื่อสกิลเยอะ
-เมื่องานเกี่ยวข้องกับสกิลใด โมเดลจะเรียก `load_skill(name)` เพื่อโหลดเนื้อหาเต็มเข้ามา
-ดูตัวอย่างได้ที่ `skills/example.md` ใช้เพิ่มความรู้/เวิร์กโฟลว์เฉพาะทาง
-
-### 🪝 Hooks (pre_tool / post_tool / session_start / session_stop)
-
-วางสคริปต์ในโฟลเดอร์ `.yousini/hooks` (หรือ `~/.yousini/hooks` หรือระบุผ่าน
-`YOUSINI_HOOKS=...`) รันตาม lifecycle ต่างๆ:
-
-- `pre_tool` / `post_tool` — รันก่อน/หลัง**ทุก** tool call
-  - `pre_tool` รับ JSON `{"tool","args"}` ทาง stdin + env `YOUSINI_TOOL`/`YOUSINI_CWD`
-    - **exit 0** → อนุญาต · **exit != 0** → บล็อก (stdout กลับเป็นเหตุผลให้โมเดล)
-  - `post_tool` รับ `{"tool","args","result"}` — best-effort ไม่เปลี่ยนผลลัพธ์
-- `session_start` — รันตอนเริ่ม session (audit log / เตรียมสภาพแวดล้อม)
-- `session_stop` — รันตอนจบ session (cleanup / flush log) — ผูกกับ `atexit` ด้วย
-
-ดูตัวอย่าง `pre_tool.example.sh` / `post_tool.example.sh` (กันดาวน์โหลดสคริปต์จากเน็ตแล้วรัน, กันแตะไฟล์ระบบ)
-
-### 💾 Session persistence
-
-บทสนทนาถูกบันทึกลงดิสก์ (JSON) ใต้ `~/.yousini/sessions` (หรือ `YOUSINI_SESSIONS=...`):
-
-- `/save [ชื่อ]` บันทึก · `/load [ชื่อ]` โหลด · `/sessions` รายการ
-- `yousini resume` โหลด session ล่าสุดแล้วเข้าสู่แชท
-- โหมด `serve` เก็บ session ของแต่ละ sid ลงดิสก์ด้วย → restart server บริบทไม่หาย
-
-### ⏳ Background shell
-
-ส่ง `run_in_background: true` ให้ tool `shell` สำหรับคำสั่งที่รันนาน Agent จะคืน job id
-ทันทีแล้วคุณสามารถถามผลทีหลังผ่าน `read_job(job_id=...)` หรือดูรายการด้วย `/jobs`
-
-### 🔖 Checkpoint / Rollback
-
-เมื่อเปิด `YOUSINI_CHECKPOINT=1` (ค่าเริ่มต้น) Agent จะ `git commit` จุดเก็บชั่วคราว
-**ก่อน**แก้ไฟล์ในแต่ละรอบการสนทนา หากพังกลางทาง พิมพ์ `/rollback` เพื่อคืนสถานะก่อนแก้
-(ทำงานได้เฉพาะใน git repository)
-
-### 🔌 MCP server (`yousini mcp`)
-
-รัน Yousini เป็น MCP server แบบ stdio (JSON-RPC 2.0) ครอบ tools ทั้งหมด
-ให้ Claude Code หรือ agent อื่นในโลก MCP เรียกใช้ได้:
+Start the interactive REPL / เริ่มโหมดสนทนา:
 
 ```bash
-yousini mcp                  # โหมดปลอดภัย: บล็อก shell/write/edit
-yousini mcp --allow-exec     # อนุญาต shell/write/edit (ระวัง)
+yousini
 ```
 
-เชื่อมต่อจาก Claude Code ผ่านไฟล์ตั้งค่า MCP ที่ชี้ไปที่ `yousini mcp` ได้ทันที
-
----
-
-## ติดตั้งบนเครื่องใหม่
+Run a single task / รันงานเดียว:
 
 ```bash
-git clone https://github.com/Zedxv55/Yousini.git
-cd Yousini
-pip install -r requirements.txt
-cp .env.example .env        # แล้วใส่ YOUSINI_API_KEY
-# ติดตั้งคำสั่ง yousini ลง PATH ด้วย symlink (launcher ตาม symlink ได้):
-ln -s "$(pwd)/yousini" ~/.local/bin/yousini
-# หรือถ้าใช้ /usr/local/bin:
-# sudo ln -s "$(pwd)/yousini" /usr/local/bin/yousini
+yousini "สร้าง demo โปรเจกต์ Python พร้อมไฟล์ hello.py และ README"
 ```
 
-ใช้ `ln -s` ไม่ใช่ `cp` เพื่อให้ launcher ไล่ตาม symlink หาโฟลเดอร์ repo จริงได้ แม้ย้าย/ลิงก์ข้ามที่
+Web UI / เว็บอินเทอร์เฟซ:
 
-> ติดตั้งแบบแพ็กเกจ (มีคำสั่ง `yousini` จาก console script): `pip install -e .`
+```bash
+yousini serve                       # http://localhost:8787
+yousini serve --host 0.0.0.0 --token secret
+yousini serve --safe                # no shell / no file writes
+yousini serve --port 9000 --no-shell
+```
 
----
+Control a remote instance / ควบคุมเครื่องระยะไกล:
 
-## 🚀 สิ่งที่เพิ่มใหม่ (Yousini v2)
-
-### อัตโนมัติเมื่อไม่ต้อง restart
-- **Config auto-load**: `/login` + บันทึก provider ลง `~/.yousini/config.json` → โหลด credentials อัตโนมัติเมื่อเริ่มโปรแกรมหรือสลับ session — ไม่ต้อง restart แล้ว
-- **Auto-apply credentials**: เปลี่ยน provider ระหว่าง session → ใช้ได้ทันที ไม่ต้อง restart
-
-### Context window จัดการตัวเอง
-- **Auto-compact**: ตรวจจับ Token usage อัตโนมัติและยุบคอนเทกซต์เมื่อเกิน 80% ของ threshold — ป้องกัน context overflow error
-- **Token-aware trimming**: `_trim()` คำนวณ token จากข้อความก่อนตัด ไม่ใช่ตัดแบบ naive จากแค่จำนวนข้อความ
-
-### 📋 Plan Mode (`/plan`) — เต็มรูปแบบ
-1. ระบุเป้าหมาย → Agent สร้าง task plan โดยใช้ LLM
-2. แสดงแผนเป็นขั้นตอน → ยืนยันก่อนเริ่ม
-3. ดำเนินทีละ step → แสดงผลหลัง step
-4. สรุปผลเมื่อเสร็จ (สำเร็จ/มีข้อผิดพลาด)
-
-### เครื่องมือใหม่
-
-| เครื่องมือ | ทำอะไร |
-|---|---|
-| `batch_edit_files` | แก้หลายไฟล์พร้อมกัน + commit อะตอมิก (เหมาะ refactor ใหญ่) |
-| `run_test_loop` | รัน test แล้วแก้ไขอัตโนมัติซ้ำ (TDD auto-fix loop) |
-
-### Web Search — Brave API default
-- ถ้าตั้ง `BRAVE_API_KEY` ไว้ → Brave Search API เป็น default (เชื่อถือได้ ไม่พังง่าย)
-- ยังมี `YOUSINI_SEARCH_PROVIDER` สำหรับเลือก SerpAPI/Tavily โดยตรง
-- ถ้าไม่มี API key → fallback เป็น scraping หลายตัว (DuckDuckGo + Bing)
+```bash
+yousini connect http://10.0.0.5:8787
+yousini connect https://yousini.example.com --token secret
+```
 
 ---
 
-## Skill
+## CLI Commands / คำสั่ง
 
-ความสามารถสไตล์ Claude Code ถูกเขียนไว้ใน `SKILL.md` (และฝังใน `yousini.py`)
-สามารถ copy ไปวางเป็น system prompt ของ Agent ตัวอื่นได้ทันที
-นอกจากนี้ยังสามารถขยายด้วย `skills/*.md` และ `YOUSINI.md` ตามหัวข้อ "ฟีเจอร์ขั้นสูง" ด้านบน
+| Command / คำสั่ง | Description / รายละเอียด |
+| --- | --- |
+| `yousini` | Start interactive session |
+| `yousini "<prompt>"` | Run a one-shot task |
+| `yousini serve` | Start web UI + SSE API |
+| `yousini connect <url>` | Connect to a remote instance |
+| `yousini mcp` | Expose Yousini as an MCP server (`--allow-exec` to enable shell/write) |
+| `yousini mcp-add <name> <cmd>` | Add an external MCP server |
+| `yousini mcp-list` / `yousini mcp-rm <name>` | Manage MCP client servers |
+| `yousini login` | Interactive provider selection |
+| `yousini theme [name]` | Set / list terminal themes |
+| `yousini profile [name]` | Switch or show the active profile |
+| `yousini cron` | Run scheduled jobs (`--once` for a single pass) |
+| `yousini resume` | Resume the most recent session |
+| `yousini webhook-add <name> <prompt>` | Register a webhook |
+| `yousini webhook-list` / `yousini webhook-rm <name>` | Manage webhooks |
+| `yousini telegram` | Start the Telegram gateway |
+
+SSE API example / ตัวอย่างการเรียก API แบบ SSE:
+
+```bash
+curl -N -X POST http://localhost:8787/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"write a hello world app","session":"demo"}'
+# streams: data: {"type":"token","text":"..."}
+```
 
 ---
 
-คำเตือน: ไฟล์ `.env` มี API Key ห้ามแชร์/อัปโหลดสาธารณะ
+## Slash Commands / คำสั่งในแชท
+
+| Command / คำสั่ง | Description / รายละเอียด |
+| --- | --- |
+| `/help` | Show all commands |
+| `/clear` | Clear the conversation |
+| `/history` | Show message history |
+| `/approve on` / `/approve off` | Toggle shell auto-approval |
+| `/reload` | Reload `YOUSINI.md` and `skills/` |
+| `/skills` | List available skills |
+| `/hooks` | Show active hooks |
+| `/cwd <path>` | Change the working directory |
+| `/model <name>` | Switch the model |
+| `/save [name]` | Save the current session |
+| `/load [name]` | Load a saved session |
+| `/sessions` | List saved sessions |
+| `/search <query>` | Search session history |
+| `/jobs` | Show background jobs |
+| `/checkpoint` | Create a git checkpoint |
+| `/rollback` | Restore the last checkpoint |
+| `/compact` | Compact the context window |
+| `/todos` | Show the task plan |
+| `/plan` | Enter plan mode |
+| `/img` | Attach an image |
+| `/memory` | Manage long-term memory |
+| `/git` | Git status / log / diff |
+| `/symbols` | Symbol index and navigation |
+| `/providers` | Show provider fallback status |
+| `/cron` | Manage scheduled jobs |
+| `/exit` | Quit |
+
+---
+
+## Tools / เครื่องมือ
+
+| Tool | Description / รายละเอียด |
+| --- | --- |
+| `shell` | Run shell commands |
+| `read_file` | Read a file with syntax highlighting |
+| `write_file` | Create or overwrite a file |
+| `edit_file` | Search-and-replace edit with diff preview |
+| `list_dir` | List a directory |
+| `glob` | Find files by pattern (`**/*.py`) |
+| `grep` | Regex search across files |
+| `web_fetch` | Fetch a URL and convert to Markdown |
+| `web_search` | Search the web (Brave / SerpAPI / Tavily / fallback scrape) |
+| `set_cwd` | Change the working directory |
+| `ask_user` | Ask the user a question |
+| `load_skill` | Lazy-load a skill to save context |
+| `run_python` | Execute Python snippets |
+| `spawn_subagent` | Spawn a subagent for parallel work |
+| `manage_todos` | Manage the task plan |
+| `batch_edit_files` | Multi-file edits with a single commit |
+| `run_test_loop` | Automated TDD fix loop |
+| `memory` | Store and recall long-term memories |
+| `skill_create` / `skill_patch` | Create and update skills |
+| `git` | Git log / status / diff / blame |
+| `symbols` | Symbol definitions and references (tree-sitter) |
+
+---
+
+## Customization / การปรับแต่ง
+
+### Context file — `YOUSINI.md`
+
+Create `YOUSINI.md` at the project root (start from `YOUSINI.example.md`) with persistent instructions about your project, stack and conventions. The agent reads it at every session start.
+
+### Skills — `skills/*.md`
+
+Markdown files in `skills/` (relative to the working directory) and `~/.yousini/skills` are indexed by name and description and injected into the system prompt. Use `load_skill(name)` to load full content on demand. See `skills/example.md`.
+
+### Hooks — `pre_tool` / `post_tool`
+
+Place scripts in `.yousini/hooks` (or `~/.yousini/hooks`) to run around tool calls:
+
+- `pre_tool` receives `{"tool","args"}` on stdin plus `YOUSINI_TOOL` / `YOUSINI_CWD` env vars. Exit 0 allows the call, non-zero blocks it.
+- `post_tool` receives `{"tool","args","result"}` for logging and side effects.
+- `session_start` / `session_stop` run at session boundaries.
+
+---
+
+## Advanced Features / ฟีเจอร์ขั้นสูง
+
+- **Auto-compact** — the context is trimmed and summarized when token usage passes the threshold, preventing context overflow.
+- **Provider fallback** — configure multiple providers in `YOUSINI_FALLBACK_PROVIDERS`; Yousini fails over automatically.
+- **Session persistence** — sessions survive restarts, on disk and searchable via `/search`.
+- **Checkpoint / rollback** — every tool batch is committed with git so `/rollback` restores a safe state.
+- **Plan mode** — `/plan` produces a step-by-step task plan before executing.
+- **Webhooks** — `yousini webhook-add <name> <prompt>` then `POST /api/webhook/<name>`.
+- **Telegram gateway** — run `yousini telegram` and chat from Telegram (set `YOUSINI_TG_TOKEN`).
+
+---
+
+## Security / ความปลอดภัย
+
+- Shell commands require confirmation by default (`AUTO_RUN=0`); use the `e` key to edit a command before running.
+- Dangerous patterns (`rm -rf`, `dd`, `shutdown`, ...) are blocked with a stronger warning.
+- File edits show diffs before applying.
+- Tool calls are wrapped in `try/except` so a failing tool never crashes the agent.
+- For untrusted environments use `serve --safe` or `--no-shell` / `--no-write`.
+- Never share your `.env` file; it is ignored by git.
+
+---
+
+## Troubleshooting / การแก้ไขปัญหา
+
+### `Error: Python not found. Install Python from python.org and disable the Store app-execution alias.`
+
+You only have the Microsoft Store stub for Python. Install Python from python.org and ensure "Add python.exe to PATH" is enabled.
+
+> คุณติดตั้ง Python เป็นแค่ Store stub เท่านั้น ให้ติดตั้งจาก python.org และเปิด "Add python.exe to PATH"
+
+### `ModuleNotFoundError: No module named 'openai'`
+
+Dependencies are missing. Run `pip install -r requirements.txt` (or `pip install -e .`) inside the project.
+
+> ไลบรารีไม่ถูกติดตั้ง ให้รัน `pip install -r requirements.txt` หรือ `pip install -e .` ในโฟลเดอร์โปรเจกต์
+
+### `git: command not found`
+
+Install Git. On Windows you can use the official installer or a portable MinGit build added to PATH.
+
+### The agent answers but never calls tools
+
+The API key may lack permissions or the model does not support tool calling. Try `mistral-large-latest` or another tool-capable model, and verify `YOUSINI_API_KEY` in `.env`.
+
+### Yousini is not working after an update
+
+Clear the cache and reinstall:
+
+```bash
+rm -rf __pycache__ yousini.egg-info .venv
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+pip install -e .
+```
+
+---
+
+## License / สัญญาอนุญาต
+
+Released under the MIT License. See `LICENSE`.
+
+---
+
+<p align="center">
+Yousini — a local coding agent for the terminal.<br>
+Yousini — coding agent สำหรับเทอร์มินัลของคุณ
+</p>
