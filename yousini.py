@@ -1830,18 +1830,46 @@ def _run_subagent_loop(agent: Agent, task: str, max_iter: int = 6) -> str:
     return "(เอเจนต์ย่อยหมดรอบจำกัด — คืนผลลัพธ์ที่ได้)"
 
 
-def _prepare_user_content(user_text: str, cwd: str):
-    """แปลงข้อความผู้ใช้ → content blocks (รองรับรูปภาพ [img:...]) — เก็บเป็น str ถ้าไม่มีรูป"""
+def _prepare_user_content(user_text: str, agent: "Agent"):
+    """แปลงข้อความผู้ใช้ → content blocks (รองรับรูปภาพ [img:...]) — เก็บเป็น str ถ้าไม่มีรูป
+    คืน (content, warnings) — warnings มีคำเตือนชัดเจนเมื่อใส่รูปแต่โมเดลไม่รองรับ vision
+    หรือไฟล์รูปโหลดไม่ได้ (กัน silent fail ที่ผู้ใช้งงว่าใส่รูปแล้วทำไมไม่ตอบ)"""
+    warnings: list[str] = []
+    if "[img:" not in user_text:
+        return user_text, warnings
     try:
         from yousini_vision import content_with_images
-        return content_with_images(user_text, cwd)
-    except Exception:
-        return user_text
+        content = content_with_images(user_text, agent.cwd)
+    except Exception as e:
+        warnings.append(f"ไม่สามารถแนบรูปภาพได้: {e}")
+        return user_text, warnings
+    if isinstance(content, str):
+        warnings.append(
+            "มี [img:...] แต่ไม่พบรูปที่โหลดได้ (ไฟล์ไม่มี, อยู่คนละโฟลเดอร์, หรือใหญ่เกิน 4MB) — "
+            "ส่งเป็นข้อความล้วนแทน")
+        return content, warnings
+    if not _model_supports_vision(agent.model):
+        warnings.append(
+            f"โมเดล {agent.model} อาจไม่รองรับรูปภาพ (vision) — เปลี่ยนเป็น pixtral-large-latest "
+            "หรือโมเดล vision (เช่น /model) เพื่อให้เห็นรูปจริง; ส่งเนื้อหาต่อ โดยภาพอาจถูกละเว้น")
+    return content, warnings
+
+
+def _model_supports_vision(model: str) -> bool:
+    """ประเมินว่าโมเดลรองรับ image_url ผ่าน OpenAI-compatible API หรือไม่ (อนุรักษ์นิยม)."""
+    m = (model or "").lower()
+    return any(k in m for k in (
+        "pixtral", "vision", "llava", "moondream", "fuyu", "gemini",
+        "claude", "gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "qwen2-vl", "qwen-vl",
+    ))
 
 
 def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
+    content, warnings = _prepare_user_content(user_text, agent)
+    for w in warnings:
+        console.print(Text(f"คำเตือน: {w}", style="yellow"))
+    agent.messages.append({"role": "user", "content": content})
     agent._trim()
     agent._auto_compact()
     tool_seen = False
@@ -1966,7 +1994,10 @@ def chat_turn(agent: Agent, user_text: str):
 # ---------------------------------------------------------------------------
 def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
-    agent.messages.append({"role": "user", "content": _prepare_user_content(user_text, agent.cwd)})
+    content, warnings = _prepare_user_content(user_text, agent)
+    for w in warnings:
+        yield {"type": "warn", "text": w}
+    agent.messages.append({"role": "user", "content": content})
     agent._trim()
     agent._auto_compact()
     attempts = 0
