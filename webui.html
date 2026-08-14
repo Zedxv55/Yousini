@@ -219,6 +219,7 @@ textarea::placeholder{color:var(--faint)}
 .statusbar{flex:none;display:flex;align-items:center;gap:14px;padding:8px 2px 16px;
   font-family:var(--mono);font-size:11px;color:var(--faint)}
 .statusbar .seg{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.statusbar .seg.sponsor{font-style:italic;color:var(--faint);max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .statusbar b{color:var(--dim);font-weight:500}
 /* ---------- activity timeline drawer ---------- */
 .scrim{position:fixed;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity .28s;z-index:40}
@@ -263,6 +264,7 @@ textarea::placeholder{color:var(--faint)}
     <div class="crumb">~/<b id="cwd">—</b></div>
     <div class="spacer"></div>
     <span class="pill" id="modelPill" title="Model">model <b id="model">—</b></span>
+    <span class="pill" id="tierPill" title="สิทธิ์ (Tier)" style="display:none"></span>
     <span class="pill" title="Session id">session <b id="sid">—</b></span>
     <button class="icon-btn" id="tlBtn" title="Activity timeline">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -309,6 +311,7 @@ textarea::placeholder{color:var(--faint)}
     <div class="seg"><span class="dot" id="dot"></span><span id="status">กำลังเชื่อมต่อ...</span></div>
     <div class="seg">cwd <b id="cwd2">—</b></div>
     <div class="seg" id="usage" style="margin-left:auto">tok —</div>
+    <div class="seg sponsor" id="sponsor" style="display:none"></div>
   </div>
 </div>
 
@@ -612,7 +615,9 @@ function setStatus(ok,msg,model){
 fetch('info').then(r=>r.json()).then(d=>{
   setStatus(true,'ออนไลน์',d.model);
   if(d.cwd){$('cwd').textContent=d.cwd;$('cwd2').textContent=d.cwd}
-  tl('info','เชื่อมต่อกับเซิร์ฟเวอร์แล้ว — model <b>'+esc(d.model||'—')+'</b>');
+  if(d.sponsor){const sp=$('sponsor');sp.textContent=d.sponsor;sp.style.display=''}
+  if(d.tier&&d.tier!=='free'){const tp=$('tierPill');tp.textContent=d.tier.toUpperCase();tp.style.display=''}
+  tl('info','เชื่อมต่อกับเซิร์ฟเวอร์แล้ว — model <b>'+esc(d.model||'—')+'</b>'+(d.tier?' · tier <b>'+esc(d.tier)+'</b>':''));
 }).catch(()=>setStatus(false,'ออฟไลน์'));
 
 chat.addEventListener('click',e=>{

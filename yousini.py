@@ -88,6 +88,55 @@ from rich.table import Table
 
 console = Console()
 
+# ---- Monetization foundation (v3.0) — billing/sponsor/usage — ล้มเหลวได้โดยไม่พังตัวหลัก ----
+_HAS_MONET = False
+try:
+    from yousini_billing import TIERS as BILL_TIERS
+    from yousini_billing import activate as _billing_activate
+    from yousini_billing import deactivate as _billing_deactivate
+    from yousini_billing import tier_info as _billing_tier_info
+    from yousini_billing import entitlement as _billing_entitlement
+    from yousini_sponsor import sponsor_line as _sponsor_line
+    from yousini_sponsor import sponsor_status as _sponsor_status
+    from yousini_usage import is_enabled as _usage_enabled
+    from yousini_usage import set_enabled as _usage_set_enabled
+    from yousini_usage import record_tokens as _usage_record_tokens
+    from yousini_usage import record_tool as _usage_record_tool
+    from yousini_usage import record_turn as _usage_record_turn
+    from yousini_usage import summary as _usage_summary
+    from yousini_usage import summary_short as _usage_summary_short
+    from yousini_usage import reset as _usage_reset
+    _HAS_MONET = True
+except Exception:
+    pass
+
+
+def _record_usage_tokens(prompt, completion):
+    if _HAS_MONET:
+        try:
+            if _usage_enabled():
+                _usage_record_tokens(int(prompt or 0), int(completion or 0))
+        except Exception:
+            pass
+
+
+def _record_usage_tool(name):
+    if _HAS_MONET:
+        try:
+            if _usage_enabled():
+                _usage_record_tool(name)
+        except Exception:
+            pass
+
+
+def _record_usage_turn():
+    if _HAS_MONET:
+        try:
+            if _usage_enabled():
+                _usage_record_turn()
+        except Exception:
+            pass
+
 # ---------------------------------------------------------------------------
 # ดีไซน์: ความหมายสีแบบเสมอต้นเสมอปลาย (semantic colors)
 # กฎสีตามที่ตกลง: "กำลังคิด/ประมวลผล = เทา (muted) · คำตอบ = เน้นสี"
@@ -870,6 +919,8 @@ class Agent:
             self.usage["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
         except Exception:
             pass
+        _record_usage_tokens(getattr(usage, "prompt_tokens", 0) or 0,
+                             getattr(usage, "completion_tokens", 0) or 0)
 
     def compact(self, keep_last: int = 6) -> str:
         """ยุบบริบทเก่าๆ เป็นสรุปสั้นๆ เพื่อลดโทเค็น (ช่วยโมเดลฟรีเมื่อสนทนายาว)
@@ -1765,6 +1816,7 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
             # ลบข้อความ spinner ออก (เขียนทับบรรทัดนั้นเมื่อเสร็จ)
             console.print()
 
+    _record_usage_tool(name)
     agent.hooks.run_post(name, args, str(result))
 
     # แสดงผลลัพธ์ในโหมดปกติ
@@ -1866,6 +1918,7 @@ def _model_supports_vision(model: str) -> bool:
 
 def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
+    _record_usage_turn()
     content, warnings = _prepare_user_content(user_text, agent)
     for w in warnings:
         console.print(Text(f"คำเตือน: {w}", style="yellow"))
@@ -1994,6 +2047,7 @@ def chat_turn(agent: Agent, user_text: str):
 # ---------------------------------------------------------------------------
 def run_turn_events(agent: Agent, user_text: str):
     agent.begin_turn()
+    _record_usage_turn()
     content, warnings = _prepare_user_content(user_text, agent)
     for w in warnings:
         yield {"type": "warn", "text": w}
@@ -2078,6 +2132,7 @@ def run_turn_events(agent: Agent, user_text: str):
                            "result": _truncate(f"Blocked by hook: {reason}", 1500)}
                     continue
                 yield {"type": "tool", "name": t["name"], "args": shown}
+                _record_usage_tool(t["name"])
                 result = IMPL[t["name"]](args, agent)
                 agent.hooks.run_post(t["name"], args, str(result))
                 agent.messages.append({"role": "tool",
@@ -2172,6 +2227,13 @@ def _print_banner(agent: Agent):
     t.add_row("▸ shell", f"{modes}  ·  skills {len(agent.skills)}  ·  hooks {'มี' if agent.hooks.has_hooks() else 'ไม่มี'}")
     console.print(Panel(t, border_style="cyan", padding=(1, 3),
                         title="〔 ◈ CORE ONLINE 〕", subtitle="Yousini — JARVIS mode · /help → คำสั่งทั้งหมด"))
+    if _HAS_MONET:
+        try:
+            line = _sponsor_line(_read_cfg_light())
+            if line:
+                console.print(Text(f"  {line}", style="dim"))
+        except Exception:
+            pass
 
 
 def _print_help():
@@ -2205,6 +2267,9 @@ def _print_help():
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
         ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
+        ("/usage [on|off|reset]", "สถิติการใช้งาน token/tool (เก็บเฉพาะในเครื่อง, opt-in)"),
+        ("/ads [on|off|status]", "เปิด/ปิด sponsor line (ปิดได้เสมอ — pro ไม่มีโฆษณา)"),
+        ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
         ("/exit, /quit", "ออก"),
     ]
     servers = [
@@ -2354,6 +2419,14 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     CONFIG_DIR.mkdir(exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_cfg_light() -> dict:
+    """อ่าน config.json แบบตรงๆ โดยไม่ trigger _apply_provider_config (กัน rebuild client)"""
+    try:
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def is_shell_allowed(cmd: str) -> bool:
@@ -2649,9 +2722,20 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             if path in ("/", "/index.html"):
                 self._send(200, web_ui, "text/html; charset=utf-8")
             elif path == "/info":
-                self._send(200, json.dumps({"model": MODEL, "name": "Yousini",
-                           "version": "2.1.0", "cwd": str(Path.cwd()),
-                           "safe": safe, "auth": bool(token)}),
+                info = {"model": MODEL, "name": "Yousini",
+                        "version": "3.0.0", "cwd": str(Path.cwd()),
+                        "safe": safe, "auth": bool(token)}
+                if _HAS_MONET:
+                    try:
+                        cfg = _read_cfg_light()
+                        info["tier"] = cfg.get("tier", "free")
+                        info["ads_enabled"] = not (cfg.get("ads_disabled")
+                                                   or cfg.get("tier") == "pro")
+                        info["usage_enabled"] = _usage_enabled()
+                        info["sponsor"] = _sponsor_line(cfg)
+                    except Exception:
+                        pass
+                self._send(200, json.dumps(info, ensure_ascii=False),
                            "application/json; charset=utf-8")
             elif path == "/health":
                 self._send(200, "ok")
@@ -3067,6 +3151,44 @@ def _cron_cmd(agent, args=""):
     console.print(Text("ใช้: /cron | /cron add <schedule> <prompt> | /cron remove <id> | /cron pause|resume <id>", style="yellow"))
 
 
+def _set_ads(disabled: bool):
+    cfg = _read_cfg_light()
+    cfg["ads_disabled"] = bool(disabled)
+    save_config(cfg)
+
+
+def _usage_status_text() -> str:
+    on = _usage_enabled() if _HAS_MONET else False
+    head = ("เปิดใช้งาน (เก็บเฉพาะในเครื่อง, ไม่ส่งออก)" if on
+            else "ปิดใช้งาน — สั่ง /usage on เพื่อเริ่มเก็บ")
+    return f"สถานะ: {head}\n\n{_usage_summary()}" if _HAS_MONET else "โมดูล usage ยังไม่พร้อม"
+
+
+def _format_tier(ti: dict) -> str:
+    price = f"${ti['price']}/เดือน" if ti["price"] else "ฟรี"
+    lines = [f"Tier: {ti['label'].upper()} ({ti['tier']})",
+             f"ราคา: {price}",
+             f"License: {ti['license_key']}",
+             "สิทธิ์ (entitlements):"]
+    for k, v in ti["entitlements"].items():
+        lines.append(f"  {k:<18}: {'เปิด' if v else 'ปิด'}")
+    return "\n".join(lines)
+
+
+def _print_session_summary():
+    if not _HAS_MONET:
+        return
+    try:
+        if _usage_enabled():
+            console.print(Panel(_usage_summary(), title="สรุปการใช้งานเซสชันนี้",
+                                border_style="cyan", padding=(1, 2)))
+        line = _sponsor_line(_read_cfg_light())
+        if line:
+            console.print(Text(f"┄ {line}", style="dim"))
+    except Exception:
+        pass
+
+
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
@@ -3077,12 +3199,14 @@ def _run_repl(agent: Agent):
         try:
             user_input = input("❯ ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print(Text("\nจบการทำงาน", style="dim")); break
+            console.print(Text("\nจบการทำงาน", style="dim"))
+            _print_session_summary(); break
         if not user_input:
             continue
         low = user_input.lower()
         if low in ("/exit", "/quit"):
-            console.print(Text("จบการทำงาน", style="dim")); break
+            console.print(Text("จบการทำงาน", style="dim"))
+            _print_session_summary(); break
         if low == "/help":
             _print_help(); continue
         if low == "/clear":
@@ -3121,10 +3245,43 @@ def _run_repl(agent: Agent):
             console.print(Text(agent.compact(), style=C_OK)); continue
         if low == "/quiet on" or low == "/quiet":
             agent.quiet_mode = True
-            console.print(Text("🤫 Silent mode: ซ่อนรายละเอียด tool เฉย ๆ แสดงแค่คำตอบ (มี spinner แสดงความคืบหน้า)", style="dim")); continue
+            console.print(Text("Silent mode: ซ่อนรายละเอียด tool — แสดงแค่คำตอบ (มี spinner แสดงความคืบหน้า)", style="dim")); continue
         if low == "/quiet off":
             agent.quiet_mode = False
-            console.print(Text("🔊 Normal mode: แสดงรายละเอียด tool call ทั้งหมด", style="green")); continue
+            console.print(Text("Normal mode: แสดงรายละเอียด tool call ทั้งหมด", style="green")); continue
+        if low == "/usage":
+            console.print(Panel(_usage_status_text(), title="Usage telemetry", border_style="magenta")); continue
+        if low == "/usage on":
+            _usage_set_enabled(True) if _HAS_MONET else None
+            console.print(Text("เปิดเก็บสถิติการใช้งานแล้ว (เฉพาะในเครื่อง ไม่ส่งออก)", style="green")); continue
+        if low == "/usage off":
+            _usage_set_enabled(False) if _HAS_MONET else None
+            console.print(Text("ปิดเก็บสถิติการใช้งานแล้ว", style="yellow")); continue
+        if low == "/usage reset":
+            _usage_reset() if _HAS_MONET else None
+            console.print(Text("ล้างสถิติทั้งหมดแล้ว", style="yellow")); continue
+        if low == "/ads on":
+            _set_ads(False)
+            console.print(Text("เปิด sponsor line แล้ว (ปิดได้ด้วย /ads off หรือ tier pro)", style="dim")); continue
+        if low == "/ads off":
+            _set_ads(True)
+            console.print(Text("ปิด sponsor line แล้ว", style="green")); continue
+        if low == "/ads status":
+            console.print(Panel(_sponsor_status(_read_cfg_light()), title="Sponsor slot", border_style="magenta")); continue
+        if low == "/tier":
+            console.print(Panel(_format_tier(_billing_tier_info(_read_cfg_light())), title="สิทธิ์ (Tier)", border_style="magenta")); continue
+        if low.startswith("/tier activate "):
+            key = user_input[15:].strip()
+            cfg = _read_cfg_light()
+            ok, msg = _billing_activate(cfg, key)
+            if ok:
+                save_config(cfg)
+            console.print(Text(msg, style="green" if ok else "red")); continue
+        if low == "/tier off":
+            cfg = _read_cfg_light()
+            msg = _billing_deactivate(cfg)
+            save_config(cfg)
+            console.print(Text(msg, style="yellow")); continue
         if low == "/reload":
             agent.refresh_context()
             console.print(Text(f"โหลดใหม่: บริบท={'เปิด' if agent.context_text.strip() else 'ปิด'} สกิล={len(agent.skills)} ตัว", style="green")); continue

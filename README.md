@@ -6,7 +6,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 2.1.0 | MIT | Python 3.10+ | English / Thai |
+| 3.0.0 | MIT | Python 3.10+ | English / Thai |
 
 ---
 
@@ -22,6 +22,7 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 - [Tools / เครื่องมือ](#tools--เครื่องมือ)
 - [Customization / การปรับแต่ง](#customization--การปรับแต่ง)
 - [Advanced Features / ฟีเจอร์ขั้นสูง](#advanced-features--ฟีเจอร์ขั้นสูง)
+- [Monetization / โมเดลธุรกิจ](#monetization--โมเดลธุรกิจ)
 - [Security / ความปลอดภัย](#security--ความปลอดภัย)
 - [Troubleshooting / การแก้ไขปัญหา](#troubleshooting--การแก้ไขปัญหา)
 - [License / สัญญาอนุญาต](#license--สัญญาอนุญาต)
@@ -314,6 +315,9 @@ curl -N -X POST http://localhost:8787/api/chat \
 | `/symbols` | Symbol index and navigation |
 | `/providers` | Show provider fallback status |
 | `/cron` | Manage scheduled jobs |
+| `/usage [on\|off\|reset]` | Usage telemetry (local only, opt-in) — token/tool statistics |
+| `/ads [on\|off\|status]` | Toggle the sponsor line (always disable-able; Pro = no ads) |
+| `/tier [activate <key>\|off]` | View / activate Pro & Team via license key |
 | `/exit` | Quit |
 
 ---
@@ -375,6 +379,27 @@ Place scripts in `.yousini/hooks` (or `~/.yousini/hooks`) to run around tool cal
 - **Plan mode** — `/plan` produces a step-by-step task plan before executing.
 - **Webhooks** — `yousini webhook-add <name> <prompt>` then `POST /api/webhook/<name>`.
 - **Telegram gateway** — run `yousini telegram` and chat from Telegram (set `YOUSINI_TG_TOKEN`).
+
+---
+
+## Monetization / โมเดลธุรกิจ
+
+Yousini is **open-source (MIT) and free to use**. Optional monetization features are opt-in, local-first and never intrusive:
+
+| Feature | What it does | Privacy |
+| --- | --- | --- |
+| **Usage telemetry** | `/usage on` collects local token/tool statistics, shown via `/usage` and at session exit. `~/.yousini/usage.json` | Stays on your machine — nothing is sent out |
+| **Sponsor line** | A subtle line under the banner / in the web UI status bar. `/ads off` hides it anytime | No tracking, no ad network |
+| **Tiers & license** | Free is unlimited. `Pro`/`Team` keys unlock extra entitlements via `/tier activate <key>` (`YSN-XXXX-XXXX-XXXX`). Keys validate locally (`YOUSINI_LICENSE_URL` optional, fail-open) | Key never leaves your machine unless you self-host a license server |
+
+Principles / หลักการออกแบบ:
+
+- Opt-in only — nothing is enabled without your explicit choice.
+- Non-intrusive — the sponsor line never blocks or interrupts your work.
+- No ads, no selling telemetry, no mandatory subscription for basic tools.
+- All config lives in `config.json` (`ads_disabled`, `tier`, `license_key`).
+
+Free tier always works. Paying is only ever about optional extras.
 
 ---
 
