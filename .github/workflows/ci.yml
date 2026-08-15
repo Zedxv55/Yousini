@@ -14,12 +14,6 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
-    # ตัวแปรสำหรับเทสต์ — YOUSINI_API_KEY ต้องมีเพื่อ import yousini ได้
-    # GH_TOKEN ให้ออกไปเพื่อเทสต์ PR flow แบบออฟเฟลน (local bare repo)
-    env:
-      YOUSINI_API_KEY: dummy-ci-key
-      GH_TOKEN: ""
-      GH_HOST: ""
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -31,6 +25,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e . pytest
       - name: Run tests
-        run: python -m pytest tests -q -p no:cacheprovider --durations 20
+        run: python -m pytest tests -q -p no:cacheprovider
       - name: Verify modules compile
         run: python -m py_compile yousini.py yousini_git.py yousini_scaffold.py yousini_queue.py yousini_lsp.py yousini_config.py yousini_plugins.py yousini_session_io.py yousini_update.py yousini_workflows.py yousini_usage.py
