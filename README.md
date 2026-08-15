@@ -6,11 +6,22 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.8.0 | MIT | Python 3.10+ | English / Thai |
+| 3.8.2 | MIT | Python 3.10+ | English / Thai |
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
 ## Changelog / บันทึกการเปลี่ยนแปลง
+
+### 3.8.2 (2026-08-15) — Terminal UX/UI Redesign
+
+- feat(tui): ย้าย Design System ของ Terminal ออกไปเป็นโมดูล `yousini_ui.py` — source of truth เดียวของสีและกรอบทั้งระบบ
+- feat(tui): Theme engine 4 แบบ (`dark` / `nord` / `tokyo-night` / `notion`) — เข้ากับ `/theme` เดิม และ sync กับ config ตอน start / command-line
+- feat(tui): จอเปิดใหม่ — ASCII art + HUD สรุปสถานะ (โมเดล · โฟลเดอร์ · git · symbols)
+- feat(tui): Chat bubbles — user bubble แยกชัดเจนจากคำตอบ AI (กรอบ cyan + subtitle model)
+- feat(tui): Tool call/result แบบ compact — tree connector + กรอบ result ตาม semantic color
+- feat(tui): Status HUD แถวเดียว (โมเดล · directory · จำนวนข้อความ · โทเค็น) ท้ายทุกคำตอบ
+- feat(tui): Error/Warning boxes, ok/cancel lines, แถวคำแนะนำปุ่มลัด (❯ /help /clear /exit)
+- design: fail-open — terminal รันได้แม้ไม่มี rich หรืออ่าน width ไม่ได้
 
 ### 3.8.1 (2026-08-15) — CI & Symbol Engine Fixes
 

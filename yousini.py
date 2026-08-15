@@ -87,6 +87,23 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 
+# ---- TUI Design System (yousini_ui.py) — สี/กรอบ/สถานะมาตรฐานวัน 3.8.1 ----
+from yousini_ui import (
+    welcome_banner as _ui_welcome,
+    user_bubble as _ui_user,
+    tool_call as _ui_tool_call,
+    tool_result as _ui_tool_result,
+    status_hud as _ui_status,
+    error_box as _ui_error,
+    warn_box as _ui_warn,
+    cmd_hints as _ui_cmd_hints,
+    set_theme as _ui_set_theme,
+    get_theme as _ui_theme,
+    _width as _ui_width,
+    ok_line as _ui_ok,
+    cancel_line as _ui_cancel,
+)
+
 console = Console()
 
 # ---- Monetization foundation (v3.0) — billing/sponsor/usage — ล้มเหลวได้โดยไม่พังตัวหลัก ----
@@ -160,8 +177,22 @@ def _think(text: str = "กำลังคิด…") -> Text:
 
 
 def _answer_panel(md_text: str) -> Panel:
+    """คงไว้เพื่อ backward compatibility — ใช้ _ui_answer_panel ใน chat_turn"""
     return Panel(Markdown(md_text), border_style=C_ANSWER,
                  title="คำตอบ Yousini", title_align="left", padding=(0, 1))
+
+def _ui_answer_panel(md_text, model=None):
+    """คำตอบ AI แบบ HUD — border cyan + subtitle model (ใช้ theme จาก yousini_ui)"""
+    theme = _ui_theme()
+    subtitle = Text(f" | {model}", style="dim") if model else None
+    return Panel(
+        Markdown(md_text),
+        border_style=theme["answer"],
+        title="[bold cyan]Yousini[/bold cyan]",
+        subtitle=subtitle,
+        padding=(0, 1),
+        width=min(_ui_width(), 118),
+    )
 
 
 def _tool_line(name: str, args_shown) -> Text:
@@ -205,7 +236,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.8.1"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -1980,7 +2011,7 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
         shown = json.dumps(shown, ensure_ascii=False)
 
     if not agent.quiet_mode:
-        console.print(_tool_line(name, shown))
+        console.print(_ui_tool_call(name, shown))
 
     # เตรียม spinner สำหรับ quiet mode (แสดงว่ากำลังทำงาน)
     spinner_live = None
@@ -2002,7 +2033,7 @@ def _exec_tool(agent: Agent, name: str, args: dict, tc_id: str):
 
     # แสดงผลลัพธ์ในโหมดปกติ
     if not agent.quiet_mode:
-        console.print(Text(f"⎿ {_truncate(str(result), 1500)}", style=C_RESULT))
+        _ui_tool_result(name, result)
 
     agent.messages.append({"role": "tool", "tool_call_id": tc_id, "content": str(result)})
     # สำหรับ todo: วาดแผนงานให้ผู้ใช้เห็นชัดเจนด้วย (เฉพาะโหมดปกติ)
@@ -2121,7 +2152,7 @@ def chat_turn(agent: Agent, user_text: str):
                 continue
             return _fallback_turn(agent, e)
         except Exception as e:
-            console.print(Text(f"Error: {e}", style="red")); return
+            _ui_error(str(e)); return
 
         content = []
         tool_calls = []
@@ -2184,7 +2215,7 @@ def chat_turn(agent: Agent, user_text: str):
                 attempts += 1
                 agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
                 continue
-            console.print(Text(f"Error: stream {e}", style="red")); return
+            _ui_error(f"stream: {e}"); return
 
         if any(t.get("name") for t in tool_calls):
             tool_seen = True
@@ -2216,8 +2247,8 @@ def chat_turn(agent: Agent, user_text: str):
         agent.messages.append({"role": "assistant", "content": ans})
         # คำตอบเน้นสี (แยกจากช่วง "กำลังคิด" ที่เป็นสีเทา)
         if ans.strip():
-            console.print(_answer_panel(ans))
-        _status_footer(agent)
+            console.print(_ui_answer_panel(ans, model=agent.model))
+        _ui_status(agent)
         console.print()
         return
 
@@ -2368,61 +2399,9 @@ def _gradient(text: str, colors):
 
 
 def _print_banner(agent: Agent):
-    palette = ["#18d3ff", "#5ca8ff", "#7c5cff", "#b45cff", "#ff5cae"]
-    console.print(_gradient(YOUSINI_ART, palette))
-
-    # --- เทเลเมทรีจริง แบบ JARVIS HUD ---
-    rows = [("สมอง", agent.model), ("เชื่อมต่อ", BASE_URL), ("โฟลเดอร์", agent.cwd)]
-    try:
-        from yousini_git import is_repo, status_short
-        if is_repo(agent.cwd):
-            br = status_short(agent.cwd).splitlines()[0]
-            rows.append(("git", br))
-    except Exception:
-        pass
-    try:
-        from yousini_symbols import SymbolIndex
-        s = SymbolIndex(agent.cwd).summary()
-        rows.append(("symbols", f"{s['total']} ตัว ({s['files']} ไฟล์)"))
-    except Exception:
-        pass
-    try:
-        from yousini_cron import JobStore
-        jobs = JobStore().load()
-        rows.append(("cron", f"{len([j for j in jobs if j.get('enabled')])} งานพร้อม"))
-    except Exception:
-        pass
-    try:
-        from yousini_memory import MemoryManager
-        m = MemoryManager()
-        rows.append(("memory", f"{len(m.inject_text().splitlines())} บรรทัด" if m.inject_text() else "ว่าง"))
-    except Exception:
-        pass
-    try:
-        from yousini_team import team_status
-        ts = team_status(_read_cfg_light())
-        if ts.get("active"):
-            rows.append(("team", f"{ts.get('workspace')} — {ts.get('name')}"))
-    except Exception:
-        pass
-    modes = "รันทันที(auto)" if agent.auto_run else "ถามก่อน"
-
-    t = Table.grid(padding=(0, 2))
-    t.add_column(style="bold cyan", justify="right")
-    t.add_column(style="dim")
-    for k, v in rows[:-1]:
-        t.add_row("▸ " + k, v)
-    t.add_row("▸ shell", f"{modes}  ·  skills {len(agent.skills)}  ·  hooks {'มี' if agent.hooks.has_hooks() else 'ไม่มี'}")
-    console.print(Panel(t, border_style="cyan", padding=(1, 3),
-                        title="〔 ◈ CORE ONLINE 〕", subtitle="Yousini — JARVIS mode · /help → คำสั่งทั้งหมด"))
-    if _HAS_MONET:
-        try:
-            line = _sponsor_line(_read_cfg_light())
-            if line:
-                console.print(Text(f"  {line}", style="dim"))
-        except Exception:
-            pass
-
+    """จอเปิด: delegete ไปยัง yousini_ui.welcome_banner (HUD + คำแนะนำปุ่มลัด)"""
+    _ui_welcome(agent)
+    return
 
 def _print_help():
     lines = [
@@ -3962,6 +3941,7 @@ def _run_repl(agent: Agent):
     agent.hooks.run_session_start()
     atexit.register(lambda: agent.hooks.run_session_stop())
     store = SessionStore(SESSION_DIR)
+    _ui_cmd_hints()
     while True:
         try:
             user_input = input("❯ ").strip()
@@ -4154,6 +4134,7 @@ def _run_repl(agent: Agent):
             if name in THEMES:
                 cfg["theme"] = name
                 save_config(cfg)
+                _ui_set_theme(name)
                 console.print(Text(f"เปลี่ยนธีมเป็น: {name}", style="green"))
             else:
                 # show theme selector
@@ -4268,6 +4249,8 @@ def _run_repl(agent: Agent):
             msg = workflow_main(user_input[9:].strip().split(), exec_tool, chat_turn=None)
             console.print(Panel(msg, title="Workflow", border_style="cyan", padding=(1, 2)))
             continue
+        # แสดงข้อความผู้ใช้แบบ bubble ก่อนส่งเข้า agent
+        _ui_user(user_input)
         # ---- plugin REPL commands (จาก plugin ที่โหลด) ----
         _plugins = _load_plugins()
         if _plugins["repl"] and low in _plugins["repl"]:
@@ -4311,6 +4294,7 @@ def _rollback_to_last_checkpoint(agent: Agent) -> str:
 
 
 def resume_main():
+    _apply_startup_theme()
     store = SessionStore(SESSION_DIR)
     name = store.last() or _default_session_name(os.getcwd())
     d = store.load(name)
@@ -4362,7 +4346,15 @@ def cron_main(interval=60, once=False):
         time.sleep(interval)
 
 
+def _apply_startup_theme():
+    """apply ธีม TUI จาก config.json ตอน start (fail-open)"""
+    try:
+        _ui_set_theme(load_config().get("theme", "dark"))
+    except Exception:
+        pass
+
 def main():
+    _apply_startup_theme()
     argv = sys.argv[1:]
 
     # ---- version ----
@@ -4542,6 +4534,7 @@ def main():
         if name and name in THEMES:
             cfg = {"theme": name}
             CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+            _ui_set_theme(name)
             console.print(Text(f"เปลี่ยนธีมเป็น: {name}", style="green"))
         else:
             # show theme selector
