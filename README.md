@@ -6,11 +6,22 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.8.2 | MIT | Python 3.10+ | English / Thai |
+| 3.9.0 | MIT | Python 3.10+ | English / Thai |
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
 ## Changelog / บันทึกการเปลี่ยนแปลง
+
+## Changelog / บันทึกการเปลี่ยนแปลง
+
+### 3.9.0 (2026-08-15) — Interactive Terminal Features
+
+- feat(interactive): โมดูลใหม่ `yousini_interactive.py` — command palette, typewriter streaming, progress bars (fail-open ทุกตัว)
+- feat(interactive): Command Palette — กดรัว `/palette` (หรือ `/p`) แล้วค้นหา/เลือกคำสั่งด้วย arrow keys + fuzzy search — รันได้ทั้ง Linux/macOS (tty raw) และ Windows (msvcrt)
+- feat(interactive): Typewriter Markdown — คำตอบ Markdown ถูกป้อนทีละคำอย่างสมูธ (`rich.Live` refresh 12/s) เปิดใช้งานโดยค่า — ปิดได้ด้วย `/stream off`
+- feat(interactive): Progress Bars — `ProgressBars` ตัวจัดการงานนาน ๆ เช่น build/scan — แสดงเป็นตาราง Live หลายงานพร้อมกัน
+- design: fail-open เต็มรูปแบบ — จอที่ไม่ใช่ tty, CI pipeline หรือ console ที่อ่าน ANSI ไม่ได้ จะ fallback เป็นการแสดงผล/input แบบปกติเสมอ
+- test: ทดสอบ E2E จริงกับ Mistral API (`open-mistral-nemo`) — chat turn, history และการนับ token ทำงานถูกต้อง
 
 ### 3.8.2 (2026-08-15) — Terminal UX/UI Redesign
 

@@ -87,6 +87,12 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 
+# ---- Interactive features (yousini_interactive.py) — command palette / typewriter / progress
+from yousini_interactive import (
+    command_palette as _ui_palette,
+    typewriter_md as _ui_typewriter,
+    ProgressBars as _ProgressBars,
+)
 # ---- TUI Design System (yousini_ui.py) — สี/กรอบ/สถานะมาตรฐานวัน 3.8.1 ----
 from yousini_ui import (
     welcome_banner as _ui_welcome,
@@ -236,7 +242,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.8.1"
+APP_VERSION = "3.9.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -2131,6 +2137,8 @@ def _model_supports_vision(model: str) -> bool:
 def chat_turn(agent: Agent, user_text: str):
     agent.begin_turn()
     _record_usage_turn()
+    if not hasattr(agent, "_typewriter"):
+        agent._typewriter = True  # typewriter on by default
     content, warnings = _prepare_user_content(user_text, agent)
     for w in warnings:
         console.print(Text(f"คำเตือน: {w}", style="yellow"))
@@ -2245,9 +2253,12 @@ def chat_turn(agent: Agent, user_text: str):
         _stop_spinner()
         ans = "".join(content)
         agent.messages.append({"role": "assistant", "content": ans})
-        # คำตอบเน้นสี (แยกจากช่วง "กำลังคิด" ที่เป็นสีเทา)
+        # คำตอบเน้นสี — typewriter effect (ป้อน Markdown ทีละคำ) ถ้าเปิด typewriter ไว้
         if ans.strip():
-            console.print(_ui_answer_panel(ans, model=agent.model))
+            if getattr(agent, "_typewriter", False):
+                _ui_typewriter(ans, model=agent.model)
+            else:
+                console.print(_ui_answer_panel(ans, model=agent.model))
         _ui_status(agent)
         console.print()
         return
@@ -3935,6 +3946,18 @@ def _load_plugins() -> dict:
     return _PLUGINS
 
 
+def _REPL_COMMANDS(agent):
+    """รายการคำสั่ง REPL สำหรับ command palette"""
+    return [
+        ("/help", "แสดงทุกคำสั่ง"), ("/clear", "ล้างประวัติแชท"), ("/history", "ดูประวัติ"),
+        ("/memory", "ดู/จัดการความจำระยะยาว"), ("/compact", "ยุบบริบท"), ("/quiet", "ซ่อนรายละเอียด tool"),
+        ("/providers", "provider + ลำดับสำรอง"), ("/usage", "สถิติ token"), ("/todos", "รายการงาน"),
+        ("/jobs", "งาน background"), ("/skills", "skills ที่โหลด"), ("/hooks", "hooks"),
+        ("/checkpoint", "git commit จุดชั่วคราว"), ("/rollback", "ย้อน checkpoint"), ("/dev", "รวมตรวจโปรเจกต์"),
+        ("/scaffold", "โครงโปรเจกต์"), ("/update", "ตรวจ/อัปเดต"), ("/config", "ดู/ตั้งค่า config"),
+        ("/stream", "typewriter mode on|off"), ("/palette", "เปิด command palette"),
+        ("/exit", "ออก"), ("/quit", "ออก"), ("/export", "สงออก session"), ("/import", "นำเข้า session"),
+    ]
 def _run_repl(agent: Agent):
     _setup_readline()
     _print_banner(agent)
@@ -3943,6 +3966,25 @@ def _run_repl(agent: Agent):
     store = SessionStore(SESSION_DIR)
     _ui_cmd_hints()
     while True:
+        if low in ("/palette", "/p"):
+            pick = _ui_palette(_REPL_COMMANDS(agent))
+            if pick:
+                console.print(Text(f"เลือก: {pick[0]}", style="dim"))
+                user_input = pick[0] + " "
+                low = user_input.lower().strip()
+                continue
+        if low.startswith("/stream"):
+            mode = low[7:].strip().lower()
+            if mode == "on":
+                agent._typewriter = True
+                console.print(Text("typewriter mode: คำตอบ Markdown จะป้อนทีละคำ", style="green"))
+            elif mode == "off":
+                agent._typewriter = False
+                console.print(Text("typewriter mode: ปิด (แสดงคำตอบในกรอบทันที)", style="yellow"))
+            else:
+                st = "เปิด" if getattr(agent, "_typewriter", False) else "ปิด"
+                console.print(Text(f"typewriter: {st} (ใช้ /stream on|off)", style="dim"))
+            continue
         try:
             user_input = input("❯ ").strip()
         except (EOFError, KeyboardInterrupt):
