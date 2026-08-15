@@ -619,7 +619,9 @@ class Hooks:
         if not self.dir:
             return None
         # เลือก interpreter ตามที่มีจริงใน PATH: บน Windows ใช้ cmd (.bat/.cmd)
-        # บน Unix ใช้ bash/sh (.sh) — ถ้า interpreter ไม่มี จะข้าม extension นั้น
+        # บน Unix ใช้ bash/sh (.sh) — hook ที่เป็น cross-platform (.bat ครอบ dw
+        # ที่ exit 0 ได้) ควรตรวจพบและรันได้ทั้งสองฝั่ง ถ้า interpreter ตรงตามไม่ได้
+        # จะ fall back ให้ shell ที่มีในเครื่องรันฟายล์นั้น (fail-open)
         if sys.platform == "win32":
             order = [(".bat", ["cmd", "/c"]), (".cmd", ["cmd", "/c"]),
                      (".sh", ["bash"])]
@@ -635,6 +637,18 @@ class Hooks:
             p = self.dir / (base + ext)
             if p.is_file():
                 return (p, runner)
+        # Cross-platform fallback: มีฟายล์ hook อยู่จริง แต่ interpreter ใน
+        # order (เช่น cmd บน Linux) ไม่มี — ใช้ shell ที่มีจริงรันแทนได้เสมอ
+        for ext in (".bat", ".cmd", ".sh"):
+            p = self.dir / (base + ext)
+            if p.is_file():
+                if shutil.which("bash"):
+                    return (p, ["bash"])
+                if shutil.which("sh"):
+                    return (p, ["sh"])
+                if shutil.which("cmd"):
+                    return (p, ["cmd", "/c"])
+                return None
         return None
 
     def has_hooks(self) -> bool:

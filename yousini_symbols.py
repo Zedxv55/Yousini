@@ -48,21 +48,43 @@ class SymbolIndex:
 
     # ---- cache ----
     def _load_cache(self, use_cache):
+        self._cache_size = {}
         try:
             if use_cache and self.cache_path.is_file():
                 self._cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
                 self.entries = self._cache.get("entries", [])
                 self.by_file = self._cache.get("by_file", {})
+                self._cache_size = self._cache.get("size", {})
         except Exception:
             self._cache = None
 
     def _is_stale(self) -> bool:
+        """ตรวจว่า cache ล้าสมัยหรือไม่ — เทียบ mtime ns และขนาดไฟล์
+        เกณฑ์: ไฟล์เปลี่ยนจริงเมื่อ mtime ใหม่กว่าเก่า > 50ms หรือขนาดต่างกัน
+        (กัน false-negative บน filesystem ความละเอียดต่ำอย่าง FAT/ext3 ที่ตัดเศษ mtime)
+        และไม่กลบการเปลี่ยนที่เกิดขึ้นเร็วในหนึ่งวินาที)"""
         if not self._cache:
             return True
         try:
             for raw, mtime in self.by_file.items():
                 p = Path(raw)
-                if not p.is_file() or p.stat().st_mtime != mtime:
+                if not p.is_file():
+                    return True
+                st = p.stat()
+                try:
+                    real = st.st_mtime_ns
+                except AttributeError:
+                    real = int(st.st_mtime * 1e9)
+                try:
+                    real_size = st.st_size
+                except AttributeError:
+                    real_size = 0
+                # normalize cache ที่อาจเก็บเป็น float วินาทีหรือ ns
+                cached_ns = int(float(mtime) * 1e9) if float(mtime) < 1e15 else int(mtime)
+                # ขนาดต่าง = เปลี่ยนแน่นอน
+                if getattr(st, 'st_size', 0) != self._cache_size.get(raw, 0):
+                    return True
+                if real > cached_ns + 50_000_000:   # ใหม่กว่า > 50 ms
                     return True
         except Exception:
             return True
@@ -70,11 +92,23 @@ class SymbolIndex:
 
     def _save_cache(self):
         try:
-            data = {"entries": self.entries, "by_file": self.by_file}
+            data = {"entries": self.entries, "by_file": self.by_file,
+                    "size": self._cache_size}
             self.cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             self._cache = data
         except Exception:
             pass
+
+    def _file_meta(self, p: Path):
+        """อ่าน (mtime_ns, size) อย่างปลอดภัย"""
+        try:
+            st = p.stat()
+            try:
+                return st.st_mtime_ns, st.st_size
+            except AttributeError:
+                return int(st.st_mtime * 1e9), st.st_size
+        except Exception:
+            return 0, 0
 
     # ---- build ----
     def _walk_files(self):
@@ -86,16 +120,22 @@ class SymbolIndex:
                     yield p
 
     def build(self):
-        self.entries, self.by_file = [], {}
+        self.entries, self.by_file, self._cache_size = [], {}, {}
         for p in self._walk_files():
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
-            got = self._parse_file(p, text)
+            try:
+                got = self._parse_file(p, text)
+            except Exception:
+                # ไฟล์ parse ไม่ได้ — ใช้ regex fallback แทนการข้ามทั้งไฟล์
+                got = self._parse_regex(text, p)
             if got:
                 self.entries.extend(got)
-                self.by_file[str(p)] = p.stat().st_mtime
+                mtime_ns, size = self._file_meta(p)
+                self.by_file[str(p)] = mtime_ns
+                self._cache_size[str(p)] = size
         if self.entries:
             self._save_cache()
         return len(self.entries)
@@ -173,38 +213,61 @@ class SymbolIndex:
         Parser, langs = self._ts_parser()
         if not Parser:
             return self._parse_regex(text, path)
-        tree = Parser(langs[path.suffix]).parse(bytes(text, "utf-8"))
+        try:
+            parser = Parser(langs[path.suffix])
+            tree = parser.parse(bytes(text, "utf-8"))
+        except Exception:
+            return self._parse_regex(text, path)
         out = []
-        types = {".js": "function_declaration", ".mjs": "function_declaration",
-                 ".cjs": "function_declaration", ".ts": "function_declaration",
-                 ".tsx": "function_declaration", ".jsx": "function_declaration"}
+
+        def _field(node, field: str):
+            """เข้าถึง field อย่างปลอดภัย — grammar ใหม่/เก่าอาจเปลี่ยนชื่อ field
+            ถ้า child_by_field_name ให้ None จะ scan children เองแทน (ไม่ throw KeyError)"""
+            try:
+                n = node.child_by_field_name(field)
+                if n is not None:
+                    return n
+            except Exception:
+                pass
+            # fallback: field 'name' อยู่ใน identifier / property_identifier / binding_identifier
+            for c in node.children:
+                if c.type in ("identifier", "property_identifier",
+                              "binding_identifier", "shorthand_property_identifier"):
+                    if c.start_byte >= node.start_byte:
+                        return c
+            return None
 
         def walk(node, in_class):
             t = node.type
-            if t in ("function_declaration", "class_declaration", "method_definition",
-                     "generator_function_declaration"):
-                name_node = node.child_by_field_name("name")
-                if name_node:
-                    name = _txt(name_node)
-                    line = node.start_point[0] + 1
-                    seg = _txt(node).splitlines()[0][:110]
-                    if t == "class_declaration":
-                        kind = "class"
-                    elif t == "method_definition":
-                        kind = "method"
-                    else:
-                        kind = "function" if not in_class else "method"
-                    out.append({"name": name, "kind": kind, "file": str(path),
-                                "line": line, "signature": seg})
-            if t == "variable_declarator":
-                name_node = node.child_by_field_name("name")
-                val = node.child_by_field_name("value")
-                if name_node and _txt(name_node).isupper():
-                    out.append({"name": _txt(name_node), "kind": "constant",
-                                "file": str(path), "line": node.start_point[0] + 1,
-                                "signature": _txt(node)[:110]})
-            for child in node.named_children:
-                walk(child, in_class or t == "class_declaration")
+            try:
+                if t in ("function_declaration", "class_declaration", "method_definition",
+                         "generator_function_declaration"):
+                    name_node = _field(node, "name")
+                    if name_node is not None:
+                        name = _txt(name_node)
+                        line = node.start_point[0] + 1
+                        seg = _txt(node).splitlines()[0][:110]
+                        if t == "class_declaration":
+                            kind = "class"
+                        elif t == "method_definition":
+                            kind = "method"
+                        else:
+                            kind = "function" if not in_class else "method"
+                        out.append({"name": name, "kind": kind, "file": str(path),
+                                    "line": line, "signature": seg})
+                if t == "variable_declarator":
+                    name_node = _field(node, "name")
+                    if name_node is not None:
+                        txt = _txt(name_node)
+                        if txt.isupper():
+                            out.append({"name": txt, "kind": "constant",
+                                        "file": str(path), "line": node.start_point[0] + 1,
+                                        "signature": _txt(node)[:110]})
+                for child in node.named_children:
+                    walk(child, in_class or t == "class_declaration")
+            except Exception:
+                # node เดียวไม่ควรทำให้ทั้งไฟล์อินเด็กซ์ไม่สำเร็จ
+                pass
 
         walk(tree.root_node, False)
         return out
@@ -244,21 +307,38 @@ class SymbolIndex:
                 return e
         return None
 
-    def refs(self, name: str, limit: int = 30) -> list:
-        """ทุกบรรทัดที่อ้างอิงชื่อ (นิยาม + การใช้งาน) — grep ผ่านไฟล์ที่ indexed"""
+    def refs(self, name: str, limit: int = 30, focus_file: str = None) -> list:
+        """ทุกบรรทัดที่อ้างอิงชื่อ (นิยาม + การใช้งาน) — grep ผ่านไฟล์ที่ indexed
+        เรียง: (1) ไฟล์ focus (ไฟล์ที่ user query) ก่อนเสมอ → ติดตา result แรด
+        (2) บรรทัดนิยาม แล้วตามด้วยการใช้งาน — ทำให้ go-to-ref เป็น deterministic"""
         name = name.strip()
-        out = []
+        focus_file = focus_file or None
+        defs, focus_refs, other_refs = [], [], []
         pat = re.compile(r"\b" + re.escape(name) + r"\b")
+        defined_files = {e["file"] for e in self.entries if e["name"] == name}
         for p in self._walk_files():
             try:
-                for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                    if pat.search(line):
-                        out.append({"file": str(p), "line": i, "text": line.strip()[:130]})
-                        if len(out) >= limit:
-                            return out
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:
                 continue
-        return out
+            for i, line in enumerate(lines, 1):
+                if pat.search(line):
+                    rec = {"file": str(p), "line": i, "text": line.strip()[:130]}
+                    is_def = (str(p) in defined_files
+                              and i == self._def_line(name, str(p)))
+                    if focus_file and str(p) == str(focus_file):
+                        (defs if is_def else focus_refs).append(rec)
+                    else:
+                        (defs if is_def else other_refs).append(rec)
+        out = focus_refs + defs + other_refs
+        return out[:limit]
+
+    def _def_line(self, name: str, file: str):
+        """บรรทัดที่นิยามในไฟล์นั้น (0 = ไม่มี)"""
+        for e in self.entries:
+            if e["name"] == name and e["file"] == file:
+                return e["line"]
+        return 0
 
     def summary(self) -> list:
         """นับจำนวนตาม kind + ไฟล์"""

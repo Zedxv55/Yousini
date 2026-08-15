@@ -3,6 +3,9 @@ import os, sys, json, subprocess
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("YOUSINI_")}
+# คง YOUSINI_API_KEY (ค่า dummy) ไว้ — yousini.py exit ทันทีถ้าไม่มี API Key
+# ทดสอบ Profiles ไม่ได้ต้องการ key จริง ขอเพียง import สำเร็จ
+_CLEAN_ENV["YOUSINI_API_KEY"] = os.environ.get("YOUSINI_API_KEY", "dummy")
 
 
 def test_profile_env_changes_dirs(tmp_path):

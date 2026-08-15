@@ -220,28 +220,44 @@ def create_pr(title: str, body: str = "", branch: str = "", base: str = "main",
 
     # 4) PR — ใช้ gh ถ้ามี ไม่งั้นคืนลิงก์ compare
     owner, repo = _parse_origin(origin)
+    _compare_url = (f"https://github.com/{owner}/{repo}/compare/{base}...{branch}?expand=1"
+                    if owner and repo else "")
     if _gh_available():
         try:
+            # หมายเหตุ (fix): `gh pr create` ไม่มี flag `--json` (มีเฉพาะในคำสั่ง query
+            # เช่น pr list/view) — การใช้ --json ทำให้ fail ทุกครั้งบน gh แท้
+            # จึงดึง URL จาก stdout ที่ gh พิมพ์ออกมาตอนสร้าง PR สำเร็จแทน
             gh = subprocess.run(
                 ["gh", "pr", "create", "--base", base, "--head", branch,
-                 "--title", title, "--body", body or title, "--json", "url"],
+                 "--title", title, "--body", body or title],
                 cwd=cwd, capture_output=True, text=True, timeout=90,
                 encoding="utf-8", errors="replace")
             if gh.returncode == 0:
-                import json as _json
-                try:
-                    url = _json.loads(gh.stdout).get("url", "")
-                except Exception:
-                    url = ""
+                url = ""
+                for line in reversed((gh.stdout or "").splitlines()):
+                    line = line.strip()
+                    if line.startswith("http"):
+                        url = line
+                        break
+                if not url:
+                    url = _compare_url
                 if url:
                     return f"เปิด PR แล้ว: {url} (branch={branch} → {base})"
+            # gh ล้มเหลว (เช่น ไม่มี GH_TOKEN ใน CI) — ใช้ลิงก์ compare แทน
+            if _compare_url:
+                err1 = (gh.stderr or "").strip().splitlines()[0][:160] if gh.stderr else ""
+                return (f"push แล้ว (branch={branch}). gh pr create ล้มเหลว"
+                        + (f" ({err1})" if err1 else "")
+                        + f" — เปิด PR ได้จากลิงก์นี้:\n{_compare_url}")
             return (f"push แล้ว (branch={branch}). gh pr create ล้มเหลว: "
                     f"{(gh.stderr or '').strip()[:300]}")
         except Exception as e:
+            if _compare_url:
+                return (f"push แล้ว (branch={branch}). gh error: {e} — "
+                        f"เปิด PR ได้จากลิงก์นี้:\n{_compare_url}")
             return f"push แล้ว (branch={branch}). gh error: {e}"
-    if owner and repo:
-        return (f"push แล้ว (branch={branch}). เปิด PR ผ่านลิงก์นี้:\n"
-                f"https://github.com/{owner}/{repo}/compare/{base}...{branch}?expand=1")
+    if _compare_url:
+        return (f"push แล้ว (branch={branch}). เปิด PR ผ่านลิงก์นี้:\n{_compare_url}")
     return f"push แล้ว (branch={branch}). เปิด PR ที่หน้า repo ({origin})"
 
 

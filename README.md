@@ -10,6 +10,20 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
+## Changelog / บันทึกการเปลี่ยนแปลง
+
+### 3.8.1 (2026-08-15) — CI & Symbol Engine Fixes
+
+- fix(symbols): cache staleness ตรวจ mtime ns + ขนาดไฟล์ — กัน false-negative บน filesystem ความละเอียดต่ำ (FAT/CI runner) และแก้ `test_stale_rebuild` ที่เคย fail
+- fix(symbols): tree-sitter JS/TS parsing resilient ขึ้น — field access ปลอดภัยพร้อม fallback scan identifier (กัน KeyError บน grammar ใหม่/เก่า)
+- fix(symbols): `refs()` เรียงแบบ deterministic — ไฟล์ที่ query อยู่แรก แล้วตามด้วยนิยาม/การใช้งาน (แก้ `test_references` LSP)
+- fix(git): ลบ flag เท็จ `--json` จาก `gh pr create` (gh ไม่มี flag นี้) — ดึง PR URL จาก stdout และ fallback ลิงก์ compare เมื่อ gh ล้มเหลว (แก้ `test_git_pr` x2 ที่ fail ใน CI ติดต่อ)
+- fix(hooks): hook ไฟล์ cross-platform (.bat) ตรวจพบและรันบน Linux/Windows ได้ทั้งสองฝั่ง (แก้ `test_hooks_resolution`)
+- fix(tests): `test_profile` คง YOUSINI_API_KEY ใน subprocess env — import yousini ไม่ exit ก่อนทดสอบ (แก้ `test_profile` x2 ที่ fail ใน CI)
+- ci: workflow ใส่ YOUSINI_API_KEY=dummy และเคลียร์ GH_TOKEN เพื่อจำลองสภาพออฟไลน์ — CI ครอบคลุมทุก matrix ผ่านครบ
+
+---
+
 ---
 
 ## Table of Contents / สารบัญ

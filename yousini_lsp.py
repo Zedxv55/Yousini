@@ -235,7 +235,8 @@ class LSPEngine:
         t = self._target(uri, line, char)
         if not t:
             return []
-        refs = self._index().refs(t["name"], limit=limit)
+        refs = self._index().refs(t["name"], limit=limit,
+                                    focus_file=str(_uri_to_path(uri)))
         out = []
         for r in refs:
             try:
