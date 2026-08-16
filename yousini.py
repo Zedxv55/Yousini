@@ -1761,7 +1761,6 @@ class Agent:
                 continue
             old_string = edit.get("old_string", "")
             new_string = edit.get("new_string", "")
-            full = self._resolve(path)
             try:
                 if old_string:
                     r = self.edit_file(path, old_string, new_string)
@@ -2174,7 +2173,6 @@ def chat_turn(agent: Agent, user_text: str):
     agent.messages.append({"role": "user", "content": content})
     agent._trim()
     agent._auto_compact()
-    tool_seen = False
     attempts = 0
     MAX_ATTEMPTS = 3
     while True:
@@ -2260,7 +2258,6 @@ def chat_turn(agent: Agent, user_text: str):
 
         _tw_ctx.__exit__(None, None, None)
         if any(t.get("name") for t in tool_calls):
-            tool_seen = True
             _stop_spinner()
             if "".join(content).strip():
                 console.print(Markdown("".join(content)))
@@ -4000,13 +3997,14 @@ def _run_repl(agent: Agent):
     store = SessionStore(SESSION_DIR)
     _ui_cmd_hints()
     while True:
-        if low in ("/palette", "/p"):
-            pick = _ui_palette(_REPL_COMMANDS(agent))
-            if pick:
-                console.print(Text(f"เลือก: {pick[0]}", style="dim"))
-                user_input = pick[0] + " "
-                low = user_input.lower().strip()
-                continue
+        try:
+            user_input = input("❯ ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print(Text("\nจบการทำงาน", style="dim"))
+            _print_session_summary(); break
+        if not user_input:
+            continue
+        low = user_input.lower()
         if low.startswith("/stream"):
             mode = low[7:].strip().lower()
             if mode == "on":
@@ -4019,14 +4017,12 @@ def _run_repl(agent: Agent):
                 st = "เปิด" if getattr(agent, "_typewriter", False) else "ปิด"
                 console.print(Text(f"typewriter: {st} (ใช้ /stream on|off)", style="dim"))
             continue
-        try:
-            user_input = input("❯ ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print(Text("\nจบการทำงาน", style="dim"))
-            _print_session_summary(); break
-        if not user_input:
-            continue
-        low = user_input.lower()
+        if low in ("/palette", "/p"):
+            pick = _ui_palette(_REPL_COMMANDS(agent))
+            if pick:
+                console.print(Text(f"เลือก: {pick[0]}", style="dim"))
+                user_input = pick[0] + " "
+                low = user_input.lower().strip()
         if low in ("/exit", "/quit"):
             console.print(Text("จบการทำงาน", style="dim"))
             _print_session_summary(); break

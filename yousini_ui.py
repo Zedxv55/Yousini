@@ -227,7 +227,6 @@ def user_bubble(text):
     if not _RICH_OK:  # pragma: no cover
         print(f"คุณ: {text}")
         return
-    theme = get_theme()
     try:
         stamp = f"{datetime_now()} "
     except Exception:

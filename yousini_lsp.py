@@ -239,10 +239,6 @@ class LSPEngine:
                                     focus_file=str(_uri_to_path(uri)))
         out = []
         for r in refs:
-            try:
-                text = Path(r["file"]).read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                text = ""
             out.append({"uri": _path_to_uri(r["file"]),
                         "range": _range_for(r["file"], r["line"], t["name"]),
                         "text": r.get("text", "")})

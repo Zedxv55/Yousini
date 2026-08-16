@@ -75,10 +75,6 @@ class SymbolIndex:
                     real = st.st_mtime_ns
                 except AttributeError:
                     real = int(st.st_mtime * 1e9)
-                try:
-                    real_size = st.st_size
-                except AttributeError:
-                    real_size = 0
                 # normalize cache ที่อาจเก็บเป็น float วินาทีหรือ ns
                 cached_ns = int(float(mtime) * 1e9) if float(mtime) < 1e15 else int(mtime)
                 # ขนาดต่าง = เปลี่ยนแน่นอน
@@ -175,7 +171,7 @@ class SymbolIndex:
         if not Parser:
             return self._parse_regex(text, path)
         tree = Parser(langs[".py"]).parse(bytes(text, "utf-8"))
-        out, stack = [], []
+        out = []
         class_depth = 0
 
         def walk(node, in_class):
