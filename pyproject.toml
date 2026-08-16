@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yousini"
-version = "3.8.0"
+version = "3.10.1"
 description = "Local Coding Agent สไตล์ Claude Code — shell, เขียน/แก้ไฟล์, web, serve, connect, MCP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,9 @@ yousini = "yousini:main"
 [tool.setuptools]
 py-modules = [
     "yousini",
+    "yousini_interactive",
+    "yousini_ui",
+    "yousini_orchestrate",
     "yousini_billing",
     "yousini_cron",
     "yousini_git",
