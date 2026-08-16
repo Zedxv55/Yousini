@@ -6,13 +6,19 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.9.0 | MIT | Python 3.10+ | English / Thai |
+| 3.10.0 | MIT | Python 3.10+ | English / Thai |
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
 ## Changelog / บันทึกการเปลี่ยนแปลง
 
 ## Changelog / บันทึกการเปลี่ยนแปลง
+
+### 3.10.0 (2026-08-16) — Progress Bars + Token Streaming
+
+- feat(progress): Integrate `ProgressBars` ใน tool จริง — `/dev` (compile/test/lint แสดง % ระหว่างตรวจ), `/scaffold` (โครงโปรเจกต์), และ shell foreground (progress ตามเวลาขณะรอคำสั่ง)
+- feat(stream): Live preview แบบ token-by-token — คำตอบ Markdown อัปเดตทันทีที่ได้จาก API stream ( latency ต่ำกว่าแบบ batch เดิม) — fail-open: ไม่ใช่ tty จะแสดงแบบปกติ
+
 
 ### 3.9.0 (2026-08-15) — Interactive Terminal Features
 

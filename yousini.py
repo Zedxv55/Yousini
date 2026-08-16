@@ -91,6 +91,7 @@ from rich.table import Table
 from yousini_interactive import (
     command_palette as _ui_palette,
     typewriter_md as _ui_typewriter,
+    typewriter_stream as _ui_typewriter_stream,
     ProgressBars as _ProgressBars,
 )
 # ---- TUI Design System (yousini_ui.py) — สี/กรอบ/สถานะมาตรฐานวัน 3.8.1 ----
@@ -242,7 +243,7 @@ CONFIRM_FILES = os.getenv("CONFIRM_FILES", "1") == "1"
 SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "60"))
 
 # version ของแอป — ใช้กับ /info, --version และ web UI (single source of truth)
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.10.0"
 
 # ---- Config ฟีเจอร์ใหม่ ----
 # ชื่อไฟล์บริบทโปรเจกต์ (เหมือน CLAUDE.md)
@@ -1203,7 +1204,16 @@ class Agent:
             t = timeout or SHELL_TIMEOUT
             proc = subprocess.Popen(["bash", "-c", command], cwd=self.cwd,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            out, _ = proc.communicate(timeout=t)
+            _pb = _ProgressBars()
+            _pb.start()
+            _b = _pb.new("shell", total=t)
+            _t0 = time.time()
+            while proc.poll() is None:
+                import time as _time
+                _pb.advance(_b, note=f"{int(_time.time() - _t0)}s")
+                _time.sleep(0.5)
+            out, _ = proc.communicate(timeout=max(1, t))
+            _pb.finish(_b, note=f"exit {proc.returncode}")
             return _truncate(f"[exit code: {proc.returncode}]\n{out or '(ไม่มีผลลัพธ์)'}")
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -1559,27 +1569,41 @@ class Agent:
 
     def scaffold_tool(self, kind: str, name: str) -> str:
         """สร้างโครงโปรเจกต์จากเทมเพลต (python-cli|python-pkg|web-static)"""
-        from yousini_scaffold import scaffold
-        return scaffold(kind, name, self.cwd)
+        _pb = _ProgressBars()
+        _pb.start()
+        _b = _pb.new(f"scaffold {kind}")
+        try:
+            from yousini_scaffold import scaffold
+            r = scaffold(kind, name, self.cwd)
+        except Exception as e:
+            r = f"Error: {e}"
+        _pb.finish(_b, note="โครงโปรเจกต์เสร็จ")
+        return r
 
     def dev_check_tool(self, scope: str = "all") -> str:
         """รวมตรวจโปรเจกต์: all|status|compile|test|lint — สถานะ git, ไวยากรณ์ Python, test, lint"""
         scope = (scope or "all").lower()
         from yousini_git import status_short
         from pathlib import Path as _Path
+        _pb = _ProgressBars()
+        _pb.start()
         parts = []
         if scope in ("all", "status"):
+            _b = _pb.new("git status")
             parts.append("— git status —\n" + status_short(self.cwd))
+            _pb.finish(_b)
         if scope in ("all", "compile"):
             import py_compile
             py = [str(p) for p in _Path(self.cwd).rglob("*.py")
                   if ".git" not in p.parts and "__pycache__" not in p.parts][:200]
             bad = []
-            for f in py:
+            _b = _pb.new("compile", total=len(py))
+            for i, f in enumerate(py):
                 try:
                     py_compile.compile(f, doraise=True, quiet=1)
                 except Exception:
                     bad.append(f)
+                _pb.advance(_b, 1, note=str(i + 1) + "/" + str(len(py)))
             parts.append("— compile — ตรวจ " + str(len(py)) + " ไฟล์ .py → " +
                          ("ไวยากรณ์ OK ทั้งหมด" if not bad else
                           "พบปัญหา " + str(len(bad)) + " ไฟล์:\n" + "\n".join("  " + b for b in bad)))
@@ -1588,10 +1612,12 @@ class Agent:
                     [p for p in _Path(self.cwd).rglob("*_test.py") if ".git" not in p.parts]
             if tests:
                 try:
+                    _b = _pb.new("pytest")
                     proc = subprocess.run([sys.executable, "-m", "pytest", "-q",
                                            "-p", "no:cacheprovider"],
                                           cwd=self.cwd, capture_output=True,
                                           text=True, timeout=240)
+                    _pb.finish(_b)
                     lines = (proc.stdout or "").strip().splitlines()
                     tail = lines[-3:] if len(lines) > 3 else lines
                     body = "\n".join(tail)
@@ -1608,8 +1634,10 @@ class Agent:
             runner = next((x for x in ("ruff", "flake8") if shutil.which(x)), None)
             if runner:
                 try:
+                    _b = _pb.new(runner)
                     proc = subprocess.run([runner, "check", "."], cwd=self.cwd,
                                           capture_output=True, text=True, timeout=120)
+                    _pb.finish(_b)
                     out = (proc.stdout or "").strip()
                     parts.append("— " + runner + " — " +
                                  ("ไม่มีปัญหา" if proc.returncode == 0 and not out
@@ -1618,6 +1646,7 @@ class Agent:
                     parts.append(f"— {runner} — error: {e}")
             else:
                 parts.append("— lint — ไม่พบ ruff/flake8 (ข้าม)")
+        _pb.stop()
         return "\n\n".join(parts) or "(ไม่มีอะไรตรวจ — ใช้ /dev <all|status|compile|test|lint>)"
 
     # ---- Export/Import session (v3.8) ----
@@ -2165,6 +2194,9 @@ def chat_turn(agent: Agent, user_text: str):
         content = []
         tool_calls = []
 
+        # live preview แบบ token-by-token (fail-open: ไม่ใช่ tty → no-op)
+        _tw_ctx = _ui_typewriter_stream()
+        _tw_ctx.__enter__()
         # spinner ธรรมดา (ไม่ใช้ rich.Live — กันเฟรมซ้ำ/จอเลอะบน Windows conhost)
         stop_spin = threading.Event()
         spinner = None
@@ -2199,6 +2231,7 @@ def chat_turn(agent: Agent, user_text: str):
                 d = chunk.choices[0].delta
                 if d.content:
                     content.append(d.content)
+                    _tw_ctx.write(d.content)
                 if d.tool_calls:
                     for tc in d.tool_calls:
                         i = tc.index or 0
@@ -2223,8 +2256,9 @@ def chat_turn(agent: Agent, user_text: str):
                 attempts += 1
                 agent.messages.append({"role": "user", "content": _TOOL_FIX_HINT})
                 continue
-            _ui_error(f"stream: {e}"); return
+                _ui_error(f"stream: {e}"); _tw_ctx.__exit__(None, None, None); return
 
+        _tw_ctx.__exit__(None, None, None)
         if any(t.get("name") for t in tool_calls):
             tool_seen = True
             _stop_spinner()

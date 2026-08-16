@@ -272,6 +272,77 @@ def typewriter_md(text, model=None, speed="fast"):
         console.print(Markdown(text))
 
 
+class TypewriterStream:
+    """Live preview แบบ token-by-token — ให้อาหาร Markdown ทีละ chunk
+    ที่ได้จากการ stream ของ API ( latency ต่ำกว่า typewriter_md ที่รอ
+    คำตอบครบทั้งข้อความก่อนเริ่มป้อน )"""
+    def __init__(self, console=None, model=None):
+        self.console = console or Console()
+        self.model = model
+        self._live = None
+        self._started = False
+        self._buffer = []
+
+    def start(self):
+        if not _RICH_OK or not sys.stdin.isatty():
+            self._started = False
+            return
+        try:
+            from rich.live import Live as _Live
+            self._live = _Live(Text("…"), console=self.console,
+                               refresh_per_second=15, transient=False)
+            self._live.start()
+            self._started = True
+        except Exception:
+            self._started = False
+
+    def write(self, token):
+        if not self._started or self._live is None or not token:
+            return
+        try:
+            from rich.markdown import Markdown
+            self._buffer.append(token)
+            self._live.update(Markdown("".join(self._buffer)))
+        except Exception:
+            pass
+
+    def stop(self):
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+        self._live = None
+        self._started = False
+
+
+def typewriter_stream():
+    """Context manager ให้อาหาร Live preview แบบ token-by-token
+
+    ใช้งาน:
+        with typewriter_stream() as tw:
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    tw.write(chunk.choices[0].delta.content)
+    ถ้าสภาพแวดล้อมไม่รองรับ (ไม่ใช่ tty / ไม่มี rich) จะเป็น no-op
+    """
+    class _Ctx:
+        def __init__(self):
+            self._tw = TypewriterStream(console=console)
+
+        def __enter__(self):
+            self._tw.start()
+            return self
+
+        def __exit__(self, *exc):
+            self._tw.stop()
+            return False
+
+        def write(self, token):
+            self._tw.write(token)
+    return _Ctx()
+
+
 # ============================================================
 # Progress bars (fail-open, thread-safe)
 # ============================================================
