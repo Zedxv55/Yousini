@@ -461,8 +461,9 @@ def test_progress_bars_advance_unknown_bar(monkeypatch):
 # ─────────────────────────── REPL completers (B1: auto-suggestion)
 def test_repl_completer_typing_u_returns_usage_update():
     assert yousini._repl_completer("/u", 0) == "/usage"
-    assert yousini._repl_completer("/u", 1) == "/update"
-    assert yousini._repl_completer("/u", 2) is None
+    assert yousini._repl_completer("/u", 1) == "/undo"
+    assert yousini._repl_completer("/u", 2) == "/update"
+    assert yousini._repl_completer("/u", 3) is None
 
 
 def test_repl_completer_exact_match_returns_single():

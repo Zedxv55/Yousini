@@ -2432,6 +2432,7 @@ _REPL_HINTS = {
     "/providers": "provider + ลำดับสำรอง", "/usage": "สถิติ token", "/todos": "รายการงาน",
     "/jobs": "งาน background", "/skills": "skills ที่โหลด", "/hooks": "hooks",
     "/checkpoint": "git commit จุดชั่วคราว", "/rollback": "ย้อน checkpoint",
+    "/undo": "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)", "/diff": "แสดง diff สีนของไฟลทแก",
     "/dev": "รวมตรวจโปรเจกต์", "/scaffold": "โครงโปรเจกต์", "/update": "ตรวจ/อัปเดต",
     "/config": "ดู/ตั้งค่า config", "/stream": "typewriter mode on|off",
     "/palette": "เปิด command palette", "/exit": "ออก", "/quit": "ออก",
@@ -2528,6 +2529,8 @@ def _print_help():
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
         ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
+        ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)"),
+        ("/diff", "แสดง diff สีนของไฟลทแก้ (git diff)"),
         ("/usage [on|off|reset]", "สถิติการใช้งาน token/tool (เก็บเฉพาะในเครื่อง, opt-in)"),
         ("/ads [on|off|status]", "เปิด/ปิด sponsor line (ปิดได้เสมอ — pro ไม่มีโฆษณา)"),
         ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
@@ -4036,7 +4039,7 @@ def _REPL_COMMANDS(agent):
         ("/memory", "ดู/จัดการความจำระยะยาว"), ("/compact", "ยุบบริบท"), ("/quiet", "ซ่อนรายละเอียด tool"),
         ("/providers", "provider + ลำดับสำรอง"), ("/usage", "สถิติ token"), ("/todos", "รายการงาน"),
         ("/jobs", "งาน background"), ("/skills", "skills ที่โหลด"), ("/hooks", "hooks"),
-        ("/checkpoint", "git commit จุดชั่วคราว"), ("/rollback", "ย้อน checkpoint"), ("/dev", "รวมตรวจโปรเจกต์"),
+        ("/checkpoint", "git commit จุดชั่วคราว"), ("/rollback", "ย้อน checkpoint"), ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด"), ("/diff", "แสดง diff สีน"), ("/dev", "รวมตรวจโปรเจกต์"),
         ("/scaffold", "โครงโปรเจกต์"), ("/update", "ตรวจ/อัปเดต"), ("/config", "ดู/ตั้งค่า config"),
         ("/stream", "typewriter mode on|off"), ("/palette", "เปิด command palette"),
         ("/exit", "ออก"), ("/quit", "ออก"), ("/export", "สงออก session"), ("/import", "นำเข้า session"),
@@ -4209,10 +4212,29 @@ def _run_repl(agent: Agent):
             console.print(Text(f"รันอัตโนมัติ: {'เปิด' if agent.auto_run else 'ปิด (ถามก่อน)'}", style="yellow")); continue
         if low == "/checkpoint":
             r = agent.checkpoint("ด้วยมือ /checkpoint")
-            console.print(Text(r or "(ไม่มีอะไรให้เก็บ หรือไม่ได้อยู่ใน git repo)", style="yellow")); continue
-        if low == "/rollback":
-            r = _rollback_to_last_checkpoint(agent)
+            console.print(Text(r or "(ไม่มอะไรให้เก็บ หรือไม่ได้อยู่ใน git repo)", style="yellow")); continue
+        if low.startswith(("/rollback", "/undo")):
+            # /undo = ย้อนการทำงานชุดล่าสุด (rollback → checkpoint ใกลสุด)
+            # /rollback --full = ล้างทุก checkpoint (ร้อง confirm ก่อน)
+            full = (low.startswith("/rollback")
+                    and low[len("/rollback"):].strip().lower() == "--full")
+            if full:
+                if not _confirm_full_rollback():
+                    console.print(Text("ยกเลิก — ไม่ได้ rollback ทุกจุด", style="dim")); continue
+                r = _rollback_to_last_checkpoint(agent, full=True)
+            else:
+                r = _rollback_to_last_checkpoint(agent)
             console.print(Text(r, style="yellow")); continue
+        if low == "/diff" or low.startswith("/diff "):
+            if low == "/diff":
+                # diff สีน: ไฟลทแก้ใน working tree → git + internal diff
+                _print_colored_diff(agent)
+            else:
+                path = user_input[6:].strip()
+                if not path:
+                    console.print(Text("ใช้: /diff [path] (ไม่ระบุ = ทุกไฟลทแก้)", style="yellow")); continue
+                _print_file_diff(agent, path)
+            continue
         if low == "/sessions":
             rows = store.list()
             if not rows:
@@ -4395,26 +4417,98 @@ def _run_repl(agent: Agent):
             pass
 
 
-def _rollback_to_last_checkpoint(agent: Agent) -> str:
+def _rollback_to_last_checkpoint(agent: Agent, full: bool = False) -> str:
+    """ย้อน working tree → checkpoint ที่ใกลสุด
+    full=True จะค้นหา commit [Yousini checkpoint] เก่าสุด (แรกสุด) แล้ว reset → จุดนั้น
+    (หลัง reset จุดเก่าจะกลายเป็น "ใกลสุด" ต่อไปเมื่อเรียกอีกครั้ง — /undo ไดหลายครั้ง)"""
     git_dir = Path(agent.cwd) / ".git"
     if not git_dir.is_dir():
-        return "ไม่ได้อยู่ใน git repository"
+        return "ไมอยู่ใน git repository"
     try:
-        r = subprocess.run(["git", "log", "--oneline", "-F", "--grep",
-                           "[Yousini checkpoint]", "-n", "1"],
-                          cwd=agent.cwd, capture_output=True, text=True, timeout=20)
-        line = r.stdout.strip().split("\n")[0]
-        if not line:
-            return "ไม่พบ checkpoint ใดๆ (ยังไม่เคย auto-commit)"
-        sha = line.split(" ", 1)[0]
+        if full:
+            r = subprocess.run(["git", "log", "--oneline", "-F", "--grep",
+                               "[Yousini checkpoint]"],
+                              cwd=agent.cwd, capture_output=True, text=True, timeout=20)
+        else:
+            r = subprocess.run(["git", "log", "--oneline", "-F", "--grep",
+                               "[Yousini checkpoint]"],
+                              cwd=agent.cwd, capture_output=True, text=True, timeout=20)
+        lines = [re.sub(r"\x1b\[[0-9;]*m", "", l)
+                 for l in r.stdout.strip().split("\n") if l.strip()]
+        if not lines:
+            return "ไมพบ checkpoint ใดๆ (ยังไมเคย auto-commit)"
+        if full:
+            # git log เรียงจากใหม→เก่า — เก่าสุดคือตัวท้ายลิสต์
+            sha = lines[-1].split(" ", 1)[0]
+        else:
+            # /undo: ย้อนไป checkpoint ลำดับถัดไป — ข้าม checkpoint ท working ตรง
+            # อยู่แล้ว เพื่อใหกด /undo ซ้ำไดหลายรอบแบบเลื่อนย้อนกลับ
+            sha = ""
+            for line in lines:
+                cand = line.split(" ", 1)[0]
+                d = subprocess.run(["git", "diff", "--quiet", cand],
+                                   cwd=agent.cwd, capture_output=True, timeout=15)
+                if d.returncode != 0:
+                    sha = cand
+                    break
+            if not sha:
+                return "ไมพบ checkpoint ถัดไปทต่างจาก working tree"
+            # สิ่งทยังไม commit จะหายหลัง hard reset — เตือนสั้น ๆ
         # ย้าย working tree กลับไปยังจุด checkpoint
         res = subprocess.run(["git", "reset", "--hard", sha], cwd=agent.cwd,
                              capture_output=True, text=True, timeout=30)
         if res.returncode == 0:
-            return f"rollback สำเร็จ → คืนสถานะที่ checkpoint {sha}"
-        return f"rollback ไม่สำเร็จ: {res.stderr}"
+            return f"rollback สำเร็จ → คืนสถานะท checkpoint {sha}"
+        return f"rollback ไมสำเร็จ: {res.stderr}"
     except Exception as e:
         return f"Error: {e}"
+
+
+def _confirm_full_rollback() -> bool:
+    """ถามยืนยันก่อน rollback ทุก checkpoint (fail-safe: ตอบไมตรง = ยกเลิก)"""
+    try:
+        answer = input("⚠ ล้าง checkpoint ทั้งหมดและคืนสถานะแรก? (y/N): ").strip().lower()
+        return answer in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _print_colored_diff(agent: Agent) -> None:
+    """/diff — แสดงไฟลทแกใน working tree เป็น diff สีน (git + ไฟลท agent แกเอง)"""
+    from yousini_git import diff_stat
+    stat = diff_stat(agent.cwd)
+    if not stat.strip():
+        console.print(Text("ไมมไฟลทแกใน working tree (สะอาด)", style="dim")); return
+    console.print(Panel(Text(stat, style="green"),
+                        title="ไฟลทเปลี่ยนแปลง (diff --stat)", border_style="magenta"))
+
+
+def _print_file_diff(agent: Agent, path: str) -> None:
+    """/diff <path> — git diff ของไฟลเฉพาะ + ข้อความอธิบายสั้น"""
+    fp = agent._resolve(path) if hasattr(agent, "_resolve") else path
+    git_dir = Path(agent.cwd) / ".git"
+    if not git_dir.is_dir():
+        console.print(Text("ไมอยู่ใน git repository — /diff ใช git เป็นหลัง", style="yellow")); return
+    r = subprocess.run(["git", "diff", "--unified=3", "--", fp],
+                       cwd=agent.cwd, capture_output=True, text=True, timeout=20)
+    diff = r.stdout
+    if not diff:
+        r2 = subprocess.run(["git", "diff", "--cached", "--unified=3", "--", fp],
+                            cwd=agent.cwd, capture_output=True, text=True, timeout=20)
+        diff = r2.stdout
+    if not diff:
+        console.print(Text(f"{fp}: ไมมการเปลี่ยนแปลง", style="dim")); return
+    t = Text()
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            t.append(line + "\n", style="green")
+        elif line.startswith("-") and not line.startswith("---"):
+            t.append(line + "\n", style="red")
+        elif line.startswith(("@@", "+++", "---")):
+            t.append(line + "\n", style="bold cyan")
+        else:
+            t.append(line + "\n", style="dim")
+    console.print(Panel(t, title=f"diff: {fp}", border_style="yellow"))
 
 
 def resume_main():
