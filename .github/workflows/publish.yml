@@ -1,0 +1,52 @@
+# Publish to PyPI — Trusted Publisher (OIDC)
+# เมื่อ push tag `vX.Y.Z` (เช่น v3.11.0) จะ build และ publish อัตโนมัติ
+#
+# ขั้นตอนครั้งแรกที่ต้องทำด้วยมือ (ครั้งเดียว):
+# 1. ไปที่ https://pypi.org/manage/account/publishing/
+# 2. Add publisher — Publisher name: GitHub Actions
+#    Workflow filename: publish.yml, Repository: Zedxv55/Yousini
+#    Environment name: pypi
+# 3. จากนั้น push tag -> PyPI publish อัตโนมัติ ไม่ต้องใช้ secret token
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+  id-token: write   # OIDC สำหรับ Trusted Publisher
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/yousini/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build
+      - name: Verify tag matches pyproject version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::Tag version ($TAG) ไม่ตรงกับ pyproject.toml version ($VER)"
+            exit 1
+          fi
+          echo "version match: $VER"
+      - name: Build sdist + wheel
+        run: python3 -m build
+      - name: Verify wheel bundles all modules
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python3 -m zipfile -l "$WHEEL" | grep -E "yousini_(interactive|ui|orchestrate|git|mcp)\.py$" | wc -l | grep -q '^5$'
+          echo "all core modules bundled"
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

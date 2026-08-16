@@ -980,7 +980,7 @@ class Agent:
                              getattr(usage, "completion_tokens", 0) or 0)
 
     def compact(self, keep_last: int = 6) -> str:
-        """ยุบบริบทเก่าๆ เป็นสรุปสั้นๆ เพื่อลดโทเค็น (ช่วยโมเดลฟรีเมื่อสนทนายาว)
+        """ยุบริบทเก่าๆ เป็นสรุปสั้นๆ เพื่อลดโทเค็น (ช่วยโมเดลฟรีเมื่อสนทนายาว)
         เก็บ system message + ไม่เกิน keep_last ข้อความล่าสุด แล้วสรุปส่วนที่เหลือ
         แบบ chunked (ทีละกลุ่ม ~6 ข้อความ/2500 ตัวอักษร) — ลดโทเค็นได้มากกว่าแบบรวมก้อนเดียว"""
         if len(self.messages) <= keep_last + 1:
@@ -989,10 +989,20 @@ class Agent:
         rest = self.messages[1:]
         to_sum = rest[:-keep_last] if keep_last else rest
         recent = rest[-keep_last:] if keep_last else []
+        # B5: tool result ยาวๆ ตัดเก็บเฉพาะต้น — summary ไม่ต้องอ่าน output ดิบทั้งหมด
+        def _pre(m):
+            role = m.get("role") or "?"
+            c = m.get("content") or ""
+            if role == "tool":
+                lines = str(c).splitlines()
+                if len(lines) > 12:
+                    c = ("\n".join(lines[:12])
+                         + f"\n…(tool result ที่เหลือ {len(lines) - 12} บรรทัง)")
+            return (role, _truncate(c, 1500))
         # แบ่งเป็น chunk ตามจำนวนข้อความ/ขนาด เพื่อไม่ให้เกิน context ในรอบเดียว
         chunks, cur, cur_len = [], [], 0
         for m in to_sum:
-            c = _truncate(m.get("content") or "", 1500)
+            role, c = _pre(m)
             size = len(c)
             if cur and (len(cur) >= 6 or cur_len + size > 2500):
                 chunks.append(cur)
@@ -1017,7 +1027,7 @@ class Agent:
                 if s:
                     summaries.append(s)
             except Exception as e:
-                return f"(ยุบบริบทไม่ได้: {e})"
+                return f"(ยุบริบทไม่ได้: {e})"
         if not summaries:
             return "(ไม่สามารถสรุปบริบทได้)"
         merged = ("\n".join(f"[ส่วน {i}] {s}" for i, s in enumerate(summaries, 1))
@@ -1027,7 +1037,7 @@ class Agent:
             {"role": "user", "content": "[บริบทสรุปจากการสนทนาก่อนหน้า]\n" + merged},
             {"role": "assistant", "content": "รับทราบสรุปบริบทแล้ว"},
         ] + recent
-        return f"ยุบบริบทเหลือ {len(self.messages)} ข้อความ (สรุป {len(summaries)} ส่วน)"
+        return f"ยุบริบทเหลือ {len(self.messages)} ข้อความ (สรุป {len(summaries)} ส่วน)"
 
     # ---- รายการสิ่งที่ต้องทำ (todo) — แสดงแผน/ความคืบหน้าให้ผู้ใช้เห็นชัดเจน ----
     def manage_todos(self, action: str, content: str = "", todo_id=None, status: str = "") -> str:
@@ -2428,11 +2438,12 @@ def _setup_readline():
 # ─────────────────────────────── REPL completers ──────────────────────────
 _REPL_HINTS = {
     "/help": "แสดงทุกคำสั่ง", "/clear": "ล้างประวัติแชท", "/history": "ดูประวัติ",
-    "/memory": "ดู/จัดการความจำระยะยาว", "/compact": "ยุบบริบท", "/quiet": "ซ่อนรายละเอียด tool",
+    "/memory": "ดู/จัดการความจำระยะยาว", "/compact": "ยุบริบท", "/quiet": "ซ่อนรายละเอียด tool",
     "/providers": "provider + ลำดับสำรอง", "/usage": "สถิติ token", "/todos": "รายการงาน",
     "/jobs": "งาน background", "/skills": "skills ที่โหลด", "/hooks": "hooks",
-    "/checkpoint": "git commit จุดชั่วคราว", "/rollback": "ย้อน checkpoint",
-    "/undo": "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)", "/diff": "แสดง diff สีนของไฟลทแก",
+    "/checkpoint": "git commit จุดชั่วคราว",
+    "/rollback": "ย้อน checkpoint",
+    "/undo": "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)", "/diff": "แสดง diff สีของไฟลที่แก",
     "/dev": "รวมตรวจโปรเจกต์", "/scaffold": "โครงโปรเจกต์", "/update": "ตรวจ/อัปเดต",
     "/config": "ดู/ตั้งค่า config", "/stream": "typewriter mode on|off",
     "/palette": "เปิด command palette", "/exit": "ออก", "/quit": "ออก",
@@ -2525,12 +2536,12 @@ def _print_help():
         ("/todos", "แสดงรายการสิ่งที่ต้องทำ (plan/ความคืบหน้า)"),
         ("/memory", "ดู/จัดการความจำระยะยาว (add|remove|replace|list <user|agent> [ข้อความ])"),
         ("/providers", "แสดง provider ที่ใช้ + ลำดับสำรอง (fallback อัตโนมัติ)"),
-        ("/compact", "ยุบบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
+        ("/compact", "ยุบริบทเก่าเป็นสรุปสั้นๆ (ลดโทเค็น เหมาะตอนสนทนายาว)"),
         ("/quiet on|off", "ซ่อนรายละเอียด tool call/result — เหลือเห็นแต่คำตอบสุดท้าย (มี spinner แสดงว่ากำลังทำงาน)"),
         ("/checkpoint", "git commit จุดเก็บชั่วคราวเดี๋ยวนั้น"),
         ("/rollback", "ย้อนกลับไปจุด checkpoint ล่าสุด (git reset)"),
         ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)"),
-        ("/diff", "แสดง diff สีนของไฟลทแก้ (git diff)"),
+        ("/diff", "แสดง diff สีของไฟลที่แก้ (git diff)"),
         ("/usage [on|off|reset]", "สถิติการใช้งาน token/tool (เก็บเฉพาะในเครื่อง, opt-in)"),
         ("/ads [on|off|status]", "เปิด/ปิด sponsor line (ปิดได้เสมอ — pro ไม่มีโฆษณา)"),
         ("/tier [activate <key>|off]", "ดู/เปิดสิทธิ์ Pro/Team ด้วย license key"),
@@ -4036,11 +4047,11 @@ def _REPL_COMMANDS(agent):
     """รายการคำสั่ง REPL สำหรับ command palette"""
     return [
         ("/help", "แสดงทุกคำสั่ง"), ("/clear", "ล้างประวัติแชท"), ("/history", "ดูประวัติ"),
-        ("/memory", "ดู/จัดการความจำระยะยาว"), ("/compact", "ยุบบริบท"), ("/quiet", "ซ่อนรายละเอียด tool"),
+        ("/memory", "ดู/จัดการความจำระยะยาว"), ("/compact", "ยุบริบท"), ("/quiet", "ซ่อนรายละเอียด tool"),
         ("/providers", "provider + ลำดับสำรอง"), ("/usage", "สถิติ token"), ("/todos", "รายการงาน"),
         ("/jobs", "งาน background"), ("/skills", "skills ที่โหลด"), ("/hooks", "hooks"),
-        ("/checkpoint", "git commit จุดชั่วคราว"), ("/rollback", "ย้อน checkpoint"), ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด"), ("/diff", "แสดง diff สีน"), ("/dev", "รวมตรวจโปรเจกต์"),
-        ("/scaffold", "โครงโปรเจกต์"), ("/update", "ตรวจ/อัปเดต"), ("/config", "ดู/ตั้งค่า config"),
+        ("/checkpoint", "git commit จุดชั่วคราว"), ("/compact", "ยุบริบทเก่าเป็นสรุปสั้น ๆ"), ("/rollback", "ย้อน checkpoint"), ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)"), ("/diff", "แสดง diff สีของไฟลที่แก้ (git diff)"),
+        ("/dev", "รวมตรวจโปรเจกต์"), ("/scaffold", "โครงโปรเจกต์"), ("/update", "ตรวจ/อัปเดต"), ("/config", "ดู/ตั้งค่า config"),
         ("/stream", "typewriter mode on|off"), ("/palette", "เปิด command palette"),
         ("/exit", "ออก"), ("/quit", "ออก"), ("/export", "สงออก session"), ("/import", "นำเข้า session"),
     ]
@@ -4213,6 +4224,16 @@ def _run_repl(agent: Agent):
         if low == "/checkpoint":
             r = agent.checkpoint("ด้วยมือ /checkpoint")
             console.print(Text(r or "(ไม่มอะไรให้เก็บ หรือไม่ได้อยู่ใน git repo)", style="yellow")); continue
+        if low == "/compact" or low.startswith("/compact "):
+            # B5: ยุบริบทสนทนายาวด้วยมือ (แบบอัตโนมัติ มีอยู่แล้ว)
+            keep = 6
+            if low.startswith("/compact "):
+                try:
+                    keep = max(1, int(user_input.split(None, 1)[1]))
+                except ValueError:
+                    console.print(Text("ใช้: /compact [จำนวนข้อความล่าสุดที่เก็บ]", style="yellow")); continue
+            r = agent.compact(keep_last=keep)
+            console.print(Text(r, style="yellow")); continue
         if low.startswith(("/rollback", "/undo")):
             # /undo = ย้อนการทำงานชุดล่าสุด (rollback → checkpoint ใกลสุด)
             # /rollback --full = ล้างทุก checkpoint (ร้อง confirm ก่อน)
@@ -4227,12 +4248,12 @@ def _run_repl(agent: Agent):
             console.print(Text(r, style="yellow")); continue
         if low == "/diff" or low.startswith("/diff "):
             if low == "/diff":
-                # diff สีน: ไฟลทแก้ใน working tree → git + internal diff
+                # diff สี: ไฟลที่แก้ใน working tree → git + internal diff
                 _print_colored_diff(agent)
             else:
                 path = user_input[6:].strip()
                 if not path:
-                    console.print(Text("ใช้: /diff [path] (ไม่ระบุ = ทุกไฟลทแก้)", style="yellow")); continue
+                    console.print(Text("ใช้: /diff [path] (ไม่ระบุ = ทุกไฟลที่แก้)", style="yellow")); continue
                 _print_file_diff(agent, path)
             continue
         if low == "/sessions":
@@ -4474,11 +4495,11 @@ def _confirm_full_rollback() -> bool:
 
 
 def _print_colored_diff(agent: Agent) -> None:
-    """/diff — แสดงไฟลทแกใน working tree เป็น diff สีน (git + ไฟลท agent แกเอง)"""
+    """/diff — แสดงไฟลที่แกใน working tree เป็น diff สี (git + ไฟลท agent แกเอง)"""
     from yousini_git import diff_stat
     stat = diff_stat(agent.cwd)
     if not stat.strip():
-        console.print(Text("ไมมไฟลทแกใน working tree (สะอาด)", style="dim")); return
+        console.print(Text("ไมมไฟลที่แกใน working tree (สะอาด)", style="dim")); return
     console.print(Panel(Text(stat, style="green"),
                         title="ไฟลทเปลี่ยนแปลง (diff --stat)", border_style="magenta"))
 

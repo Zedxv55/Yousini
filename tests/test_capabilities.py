@@ -163,7 +163,7 @@ def test_compact_chunks_and_merges(monkeypatch):
         a.messages.append({"role": "user" if i % 2 == 0 else "assistant",
                            "content": f"ข้อความที่ {i}"})
     out = Agent.compact(a, keep_last=2)
-    assert "ยุบบริบทเหลือ" in out
+    assert "ยุบริบทเหลือ" in out
     assert len(a.messages) == 5                      # sys + สรุป + ack + recent 2
     assert len(log) == 5                             # สรุปทีละ chunk
     merged = a.messages[1]["content"]
