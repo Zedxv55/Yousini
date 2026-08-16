@@ -39,7 +39,8 @@ jobs:
       - name: Install quality tools
         run: |
           python -m pip install --upgrade pip
-          pip install ruff coverage pytest
+          pip install -e . ruff coverage pytest
+          pip install pytest-mock 2>/dev/null || true
       - name: Lint — logic errors เป็น error เด็ดขาด (undefined, syntax, unreachable)
         run: |
           ruff check --select=F821,E902,F601,F602,F701,F706,F707,F822,F823,F811,F841 \
