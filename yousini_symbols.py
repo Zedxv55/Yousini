@@ -269,24 +269,61 @@ class SymbolIndex:
         return out
 
     def _parse_regex(self, text: str, path: Path):
-        """Fallback สำหรับภาษาที่ไม่มี grammar — ค้น def/class/function แบบ regex"""
+        """Fallback สำหรับภาษาที่ไม่มี grammar — ค้น def/class/function/constant แบบ regex
+        แยก method (ใน Python: def ที่มี indent) vs function (ระดับโมดูล) ได้ —
+        และ JS method ที่ตามหลัง class { (track class depth)"""
         out = []
         pats = [
-            (r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(", "function"),
-            (r"^\s*(?:async\s+)?function\s+([A-Za-z_$]\w*)\s*\(", "function"),
-            (r"^\s*class\s+([A-Za-z_$]\w*)", "class"),
-            (r"^\s*(?:pub\s+)?fn\s+([A-Za-z_]\w*)", "function"),
-            (r"^\s*func\s+\([^)]*\)\s+([A-Za-z_]\w*)\s*\(", "function"),
-            (r"^\s*type\s+([A-Za-z_]\w*)\s*struct", "class"),
+            # (regex, kind, ใช้ indentation จับ method/constant)
+            (r"^(async\s+)?def\s+([A-Za-z_]\w*)\s*\(", "function"),
+            (r"^(async\s+)?function\s+([A-Za-z_$]\w*)\s*\(", "function"),
+            (r"^([A-Za-z_$]\w*)\s*\(", "function"),
+            (r"^class\s+([A-Za-z_$]\w*)", "class"),
+            (r"^(?:pub\s+)?fn\s+([A-Za-z_]\w*)", "function"),
+            (r"^func\s+\([^)]*\)\s+([A-Za-z_]\w*)\s*\(", "function"),
+            (r"^type\s+([A-Za-z_]\w*)\s*struct", "class"),
+            (r"^([A-Z][A-Z0-9_]{1,})\s*=", "constant"),
+            (r"^(?:const|let|var)\s+([A-Z][A-Z0-9_]{1,})\s*=", "constant"),
         ]
+        ext = path.suffix
+        # JS/TS: class depth — เพิ่มเฉพาะตอนเข้า class declaration block,
+        # ลดเมื่อ braces ภายใน class สมดุล (ไม่นับ function block ปกติ)
+        class_depth = 0
         for i, line in enumerate(text.splitlines(), 1):
             ls = line.strip()
+            if ext in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+                if class_depth == 0 and re.match(r"^class\s+[A-Za-z_$]\w*", ls):
+                    class_depth = 1 if "{" in ls else -1   # -1 = รอ { บรรทังถัดไป
+                elif class_depth > 0:
+                    class_depth += ls.count("{") - ls.count("}")
+                    if class_depth <= 0:
+                        class_depth = 0
+                elif class_depth == -1 and "{" in ls:
+                    class_depth = 1
             for pat, kind in pats:
                 m = re.match(pat, ls)
-                if m:
-                    out.append({"name": m.group(1), "kind": kind, "file": str(path),
-                                "line": i, "signature": ls[:110]})
-                    break
+                if not m:
+                    continue
+                name = m.group(1) if kind != "function" else (
+                    m.group(2) if m.lastindex == 2 else m.group(1))
+                if kind == "function" and m.lastindex == 2:
+                    name = m.group(2)
+                # Python: def ที่มี indentation = method (อยู่ใน class block)
+                if kind == "function" and ext == ".py":
+                    indented = len(line) - len(line.lstrip()) > 0
+                    if indented:
+                        out.append({"name": name, "kind": "method", "file": str(path),
+                                    "line": i, "signature": ls[:110]})
+                        break
+                # JS/TS: function/method ที่อยู่ภายใน class depth > 0 = method
+                if kind == "function" and ext in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+                    if class_depth > 0:
+                        out.append({"name": name, "kind": "method", "file": str(path),
+                                    "line": i, "signature": ls[:110]})
+                        break
+                out.append({"name": name, "kind": kind, "file": str(path),
+                            "line": i, "signature": ls[:110]})
+                break
         return out
 
     # ---- query ----

@@ -134,3 +134,55 @@ def test_stale_rebuild(tmp_path):
     idx2 = SymbolIndex(str(root))
     assert len(idx2.entries) == first + 1
     assert idx2.find("brand_new_fn") is not None
+
+
+# ---- regex fallback (เมื่อไมม tree-sitter) — regression tests
+# (bug: requirements.txt ไมม tree-sitter → คนใช pip install -r requirements.txt
+# จะตกไป regex fallback ที่แยก method/function ไมถูก — แกแล้วใน yousini_symbols.py)
+
+
+def _force_regex_index(tmp_path):
+    """SymbolIndex ที่บังคับใช regex fallback (จำลองระบบไมม tree-sitter)"""
+    from unittest import mock
+    with mock.patch.object(SymbolIndex, "_ts_parser", return_value=(None, {})):
+        return SymbolIndex(str(tmp_path), use_cache=False)
+
+
+def test_regex_fallback_python_kinds(tmp_path):
+    """regex fallback ต้องแยก method vs function ไดเหมือน tree-sitter"""
+    root = _make_tree(tmp_path)
+    idx = _force_regex_index(root)
+    names = {e["name"]: e for e in idx.entries}
+    assert names["Worker"]["kind"] == "class"
+    assert names["greet"]["kind"] == "method", "def ใน class ต้องเป็น method"
+    assert names["helper"]["kind"] == "function", "def ระดับโมดูลต้องเป็น function"
+    assert "MAX_RETRIES" in names and names["MAX_RETRIES"]["kind"] == "constant"
+
+
+def test_regex_fallback_js_support(tmp_path):
+    """regex fallback ต้องแยก JS function/method/class/constant"""
+    root = _make_tree(tmp_path)
+    idx = _force_regex_index(root)
+    names = {e["name"]: e for e in idx.entries}
+    assert names["add"]["kind"] == "function", "function นอก class ต้องเป็น function"
+    assert names["Server"]["kind"] == "class"
+    assert names["start"]["kind"] == "method", "function ใน class ต้องเป็น method"
+    assert "PORT" in names and names["PORT"]["kind"] == "constant"
+
+
+def test_requirements_txt_has_tree_sitter():
+    """requirements.txt ต้องม dep เดียวกับ pyproject.toml (กันตกไป regex fallback)"""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    req = open(os.path.join(repo, "requirements.txt"), encoding="utf-8").read()
+    try:
+        import tomllib  # Python 3.11+
+        toml = tomllib
+    except ImportError:
+        import tomli as toml  # type: ignore
+    with open(os.path.join(repo, "pyproject.toml"), "rb") as f:
+        py = toml.load(f)
+    want = {d.split(">=")[0].split("==")[0] for d in py["project"]["dependencies"]}
+    have = {l.strip().split(">=")[0].split("==")[0]
+            for l in req.splitlines() if l.strip() and not l.startswith("#")}
+    missing = want - have
+    assert not missing, f"requirements.txt ขาด dependencies: {missing}"
