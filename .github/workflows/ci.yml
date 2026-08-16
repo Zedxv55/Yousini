@@ -28,3 +28,31 @@ jobs:
         run: python -m pytest tests -q -p no:cacheprovider
       - name: Verify modules compile
         run: python -m py_compile yousini.py yousini_git.py yousini_scaffold.py yousini_queue.py yousini_lsp.py yousini_config.py yousini_plugins.py yousini_session_io.py yousini_update.py yousini_workflows.py yousini_usage.py
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install quality tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff coverage pytest
+      - name: Lint — logic errors เป็น error เด็ดขาด (undefined, syntax, unreachable)
+        run: |
+          ruff check --select=F821,E902,F601,F602,F701,F706,F707,F822,F823,F811,F841 \
+            yousini.py yousini_ui.py yousini_interactive.py yousini_git.py \
+            yousini_scaffold.py yousini_queue.py yousini_lsp.py yousini_config.py \
+            yousini_plugins.py yousini_session_io.py yousini_update.py yousini_workflows.py \
+            yousini_usage.py yousini_symbols.py
+      - name: Lint — style warnings เป็นรายงาน (ไม่ block — legacy ยังมี E702/E402 เยอะ)
+        run: |
+          ruff check --select=E,F,W --ignore=E501,E401,E402,E702,W292,F401,F841,F541,E731,E741 \
+            yousini.py yousini_ui.py yousini_interactive.py yousini_git.py || echo "::warning::style issues คงเหลือ — เป้าหมาย v3.11: แก้ legacy ให้ clean"
+      - name: Test coverage report
+        run: |
+          python -m coverage run -m pytest tests -q -p no:cacheprovider
+          python -m coverage report --fail-under=50
+
