@@ -23,7 +23,9 @@ except Exception:  # pragma: no cover
 
 try:
     from rich.live import Live
-    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn
+    from rich.progress import (
+        Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn,
+    )
     _HAS_PROGRESS = True
 except Exception:  # pragma: no cover
     _HAS_PROGRESS = False
@@ -42,7 +44,8 @@ def _read_key():
                 b = msvcrt.getch()
                 if b == b"\xe0" or b == b"\x00":
                     b = msvcrt.getch()
-                    return {72: "up", 80: "down", 73: "pageup", 81: "pagedown"}.get(b[0])
+                    _ARROWS = {72: "up", 80: "down", 73: "pageup", 81: "pagedown"}
+                    return _ARROWS.get(b[0])
                 if b == b"\r":
                     return "enter"
                 if b == b"\x03":
@@ -187,11 +190,14 @@ def command_palette(commands, title="Command Palette", prefill=""):
                 r = _read_key()
                 if r is None:  # ไม่ใช่ tty → fallback ทันที
                     live.stop()
-                    return command_palette.__defaults__[1] and None or _palette_fallback(entries)
+                    _default = command_palette.__defaults__[1]
+                    return None if _default else _palette_fallback(entries)
                 key, _ = r
                 if key == "enter":
                     scored = [(k, d, _fuzzy_score(query, k)) for k, d in entries]
-                    scored = sorted([x for x in scored if x[2] >= 0], key=lambda x: -x[2])[:10]
+                    scored = sorted(
+                        [x for x in scored if x[2] >= 0], key=lambda x: -x[2],
+                    )[:10]
                     if not scored:
                         live.stop(); continue
                     sel2 = sel % len(scored)
@@ -211,7 +217,8 @@ def command_palette(commands, title="Command Palette", prefill=""):
                     live.stop(); console.print(); return None
                 elif key == "esc":
                     live.stop(); console.print(); return None
-                elif isinstance(key, str) and len(key) >= 1 and key not in ("pageup", "pagedown") and not (ord(key[0]) < 32):
+                elif isinstance(key, str) and len(key) >= 1 \
+                        and key not in ("pageup", "pagedown") and ord(key[0]) >= 32:
                     query = (query + key)[:40]
                     sel = 0
                 _render(live)
@@ -258,15 +265,19 @@ def typewriter_md(text, model=None, speed="fast"):
             cur = []
             for part in chunks:
                 cur.append(part)
-                live.update(Panel(Markdown("".join(cur)),
-                                  border_style="cyan", title="[bold cyan]Yousini[/bold cyan]",
-                                  subtitle=Text(f" | {model}", style="dim") if model else None,
-                                  padding=(0, 1)))
+                live.update(Panel(
+                    Markdown("".join(cur)),
+                    border_style="cyan", title="[bold cyan]Yousini[/bold cyan]",
+                    subtitle=Text(f" | {model}", style="dim") if model else None,
+                    padding=(0, 1),
+                ))
             # เฟรมสุดท้าย: เต็มความกว้าง
-            live.update(Panel(Markdown(text),
-                              border_style="cyan", title="[bold cyan]Yousini[/bold cyan]",
-                              subtitle=Text(f" | {model}", style="dim") if model else None,
-                              padding=(0, 1)))
+            live.update(Panel(
+                Markdown(text),
+                border_style="cyan", title="[bold cyan]Yousini[/bold cyan]",
+                subtitle=Text(f" | {model}", style="dim") if model else None,
+                padding=(0, 1),
+            ))
     except Exception:
         from rich.markdown import Markdown
         console.print(Markdown(text))
@@ -361,7 +372,9 @@ class ProgressBars:
             self._started = False
             return
         try:
-            self._live = Live(refresh_per_second=8, console=self.console, transient=True)
+            self._live = Live(
+                refresh_per_second=8, console=self.console, transient=True,
+            )
             self._live.start()
             self._started = True
         except Exception:

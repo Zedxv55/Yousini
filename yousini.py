@@ -2414,6 +2414,58 @@ def _setup_readline():
         pass
     readline.set_history_length(2000)
     atexit.register(lambda: readline.write_history_file(HIST_FILE))
+    # Auto-suggestion: พิมพ์ "/" แล้วกด Tab จะเสนอรายการคำสั่ง REPL + hints
+    try:
+        readline.set_completer_delims(
+            readline.get_completer_delims().replace("/", "").replace("-", ""))
+        readline.set_completer(_repl_completer)
+        if hasattr(readline, "set_completion_display_matches_hook"):
+            readline.set_completion_display_matches_hook(_repl_completer_hints)
+    except Exception:
+        pass
+
+
+# ─────────────────────────────── REPL completers ──────────────────────────
+_REPL_HINTS = {
+    "/help": "แสดงทุกคำสั่ง", "/clear": "ล้างประวัติแชท", "/history": "ดูประวัติ",
+    "/memory": "ดู/จัดการความจำระยะยาว", "/compact": "ยุบบริบท", "/quiet": "ซ่อนรายละเอียด tool",
+    "/providers": "provider + ลำดับสำรอง", "/usage": "สถิติ token", "/todos": "รายการงาน",
+    "/jobs": "งาน background", "/skills": "skills ที่โหลด", "/hooks": "hooks",
+    "/checkpoint": "git commit จุดชั่วคราว", "/rollback": "ย้อน checkpoint",
+    "/dev": "รวมตรวจโปรเจกต์", "/scaffold": "โครงโปรเจกต์", "/update": "ตรวจ/อัปเดต",
+    "/config": "ดู/ตั้งค่า config", "/stream": "typewriter mode on|off",
+    "/palette": "เปิด command palette", "/exit": "ออก", "/quit": "ออก",
+    "/export": "สงออก session", "/import": "นำเข้า session",
+}
+
+
+def _repl_completer(text: str, state: int) -> str | None:
+    """Tab-completion คำสั่ง REPL — ทำงานเมื่อข้อความที่เริ่มต้นด้วย /"""
+    try:
+        matches = [c for c in _REPL_HINTS if c.startswith(text)]
+        if not text:
+            matches = [c for c in _REPL_HINTS if c.startswith("/")]
+        return matches[state] if state < len(matches) else None
+    except Exception:
+        return None
+
+
+def _repl_completer_hints(_substitution: str, _matches, _length: int) -> None:
+    """แสดง hints คำสั่งใต้ prompt (fail-safe: ไม่ให้ completion พังทั้ง REPL)"""
+    try:
+        import sys as _sys
+        if _matches:
+            console.print("")
+            t = Text()
+            for m in _matches:
+                t.append("  /", style="bold cyan")
+                t.append(m[1:], style="cyan")
+                t.append(f" — {_REPL_HINTS.get(m, '')}", style="dim")
+            console.print(t)
+            console.print("❯ ", end="", highlight=False)
+            _sys.stdout.flush()
+    except Exception:
+        pass
 
 
 YOUSINI_ART = r"""

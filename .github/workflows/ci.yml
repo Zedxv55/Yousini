@@ -55,5 +55,5 @@ jobs:
       - name: Test coverage report
         run: |
           python -m coverage run -m pytest tests -q -p no:cacheprovider
-          python -m coverage report --fail-under=50
+          python -m coverage report --fail-under=60
 

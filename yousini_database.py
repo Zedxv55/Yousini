@@ -45,17 +45,17 @@ async def db_schema(table_name: Optional[str] = None, db_path: Optional[str] = N
             cur = conn.execute(f'PRAGMA table_info("{safe_table}")')
             rows = [dict(row) for row in cur.fetchall()]
             return {"success": True, "table": table_name, "columns": rows}
-        
+
         # Get all tables
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cur.fetchall()]
-        
+
         schemas = {}
         for t in tables:
             safe_t = t.replace('"', '""')
             cur = conn.execute(f'PRAGMA table_info("{safe_t}")')
             schemas[t] = [dict(row) for row in cur.fetchall()]
-        
+
         return {"success": True, "tables": tables, "schema": schemas}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -106,7 +106,7 @@ SQL_TOOL = {
 
 
 SQL_SCHEMA_TOOL = {
-    "type": "function", 
+    "type": "function",
     "function": {
         "name": "sql_schema",
         "description": "View database table schema",

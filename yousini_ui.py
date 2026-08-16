@@ -275,7 +275,10 @@ def tool_call(name, args_shown):
         print(f"⏺ {name} {_truncate(args_shown, 200)}")
         return Text()
     theme = get_theme()
-    shown = args_shown if isinstance(args_shown, str) else json.dumps(args_shown, ensure_ascii=False)
+    if isinstance(args_shown, str):
+        shown = args_shown
+    else:
+        shown = json.dumps(args_shown, ensure_ascii=False)
     t = Text()
     t.append("┣━ ", style="bright_black")
     t.append("⏺ ", style=theme["tool"])
