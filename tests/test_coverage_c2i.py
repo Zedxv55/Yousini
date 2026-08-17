@@ -10,10 +10,18 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import requests  # type: ignore
+import urllib.request
+import urllib.error
 
 import yousini
 
+
+def _req(req):
+    """Send a request; return the response object (even on HTTP errors)."""
+    try:
+        return urllib.request.urlopen(req)
+    except urllib.error.HTTPError as _e:
+        return _e
 
 def _free_port():
     s = socket.socket()
@@ -70,52 +78,49 @@ def test_serve_get_routes_and_auth(tmp_path, monkeypatch):
     try:
         base = f"http://127.0.0.1:{port}"
         # banner + health + html
-        r = requests.get(base + "/health", timeout=5)
-        assert r.text == "ok", r.text
-        r = requests.get(base + "/", timeout=5)
-        assert "Yousini" in r.text, r.text[:80]
-        r = requests.get(base + "/info", timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/health"))
+        assert r.read().decode() == "ok", r.read().decode()
+        r = _req(urllib.request.Request(base + "/"))
+        assert "Yousini" in r.read().decode(), r.read().decode()[:80]
+        r = _req(urllib.request.Request(base + "/info"))
+        d = json.loads(r.read().decode())
         assert d["model"] == "test-model"
         # master token → role_for_token returns (owner, admin)
         assert d.get("user", "local") == "local" or d.get("role") == "admin"
         assert d["tier"] in ("free", "pro", None)
         # auth required without token
-        r = requests.get(base + "/api/stats", timeout=5)
-        assert r.status_code == 401
-        r = requests.get(base + "/api/stats", headers={"X-Yousini-Token": "tok123"}, timeout=5)
-        assert r.status_code == 200
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/stats"))
+        assert r.status == 401
+        r = _req(urllib.request.Request(base + "/api/stats", headers={"X-Yousini-Token": "tok123"}))
+        assert r.status == 200
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         assert "server" in d
         # bearer auth
-        r = requests.get(base + "/api/queue/status",
-                         headers={"Authorization": "Bearer tok123"}, timeout=5)
-        assert r.status_code == 200
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/status", headers={"Authorization": "Bearer tok123"}))
+        assert r.status == 200
+        d = json.loads(r.read().decode())
         assert "counts" in d
         # token in query string
-        r = requests.get(base + "/api/queue/get?id=x",
-                         params={"token": "tok123"}, timeout=5)
-        assert r.status_code == 200
+        r = _req(urllib.request.Request(base + "/api/queue/get?id=x&token=tok123"))
+        assert r.status == 200
         # bad token
-        r = requests.get(base + "/api/stats", headers={"X-Yousini-Token": "bad"}, timeout=5)
-        assert r.status_code == 401
+        r = _req(urllib.request.Request(base + "/api/stats", headers={"X-Yousini-Token": "bad"}))
+        assert r.status == 401
         # lsp summary
-        r = requests.get(base + "/api/lsp/summary", timeout=5)
-        assert r.status_code == 401
-        r = requests.get(base + "/api/lsp/summary",
-                         headers={"X-Yousini-Token": "tok123"}, timeout=5)
-        assert r.status_code == 200
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/lsp/summary"))
+        assert r.status == 401
+        r = _req(urllib.request.Request(base + "/api/lsp/summary", headers={"X-Yousini-Token": "tok123"}))
+        assert r.status == 200
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         assert "result" in d
         # 404 fallback
-        r = requests.get(base + "/nope", timeout=5)
-        assert r.status_code == 404
+        r = _req(urllib.request.Request(base + "/nope"))
+        assert r.status == 404
     finally:
         try:
-            requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            _req(urllib.request.Request(f"http://127.0.0.1:{port}/health"))
         except Exception:
             pass
 
@@ -142,62 +147,50 @@ def test_serve_post_market_webhook_queue(monkeypatch, tmp_path):
                         base = f"http://127.0.0.1:{port}"
                         h = {"X-Yousini-Token": "t2"}
                         # marketplace disabled
-                        r = requests.post(base + "/api/market/catalog", headers=h,
-                                          json={}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/market/catalog", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is False
                         # marketplace install with missing source
-                        r = requests.post(base + "/api/market/install", headers=h,
-                                          json={"source": ""}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/market/install", data=json.dumps({"source": ""}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d.get("error") or d.get("ok")
                         # unknown market action
-                        r = requests.post(base + "/api/market/foo", headers=h,
-                                          json={}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/market/foo", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is False
                         # unknown lsp method
-                        r = requests.post(base + "/api/lsp/unknown", headers=h,
-                                          json={}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/lsp/unknown", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is False
                         # bad content-length json fallback
-                        r = requests.post(base + "/api/lsp/summary", headers=h,
-                                          data="not-json", timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/lsp/summary", data="not-json".encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is True  # payload fallback {}
                         # webhook unknown
-                        r = requests.post(base + "/api/webhook/none", headers=h,
-                                          json={}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/webhook/none", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is False
                         # queue actions
-                        r = requests.post(base + "/api/queue/enqueue", headers=h,
-                                          json={"prompt": "do it"}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/queue/enqueue", data=json.dumps({"prompt": "do it"}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is True
                         tsk = d["task"]
                         tid = tsk["id"]
-                        r = requests.post(base + "/api/queue/claim", headers=h,
-                                          json={"worker": "default"}, timeout=5)
-                        assert r.json()["claimed"] is True
-                        r = requests.post(base + "/api/queue/complete", headers=h,
-                                          json={"id": tid, "result": "x"}, timeout=5)
-                        assert r.json()["ok"] is True
+                        r = _req(urllib.request.Request(base + "/api/queue/claim", data=json.dumps({"worker": "default"}).encode(), headers=h, method="POST"))
+                        assert json.loads(r.read().decode())["claimed"] is True
+                        r = _req(urllib.request.Request(base + "/api/queue/complete", data=json.dumps({"id": tid, "result": "x"}).encode(), headers=h, method="POST"))
+                        assert json.loads(r.read().decode())["ok"] is True
                         # get unknown task
-                        r = requests.get(base + "/api/queue/get?id=nope",
-                                         headers=h, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/queue/get?id=nope", headers=h))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is True
                         # queue no action
-                        r = requests.post(base + "/api/queue/nope", headers=h,
-                                          json={}, timeout=5)
-                        d = r.json()
+                        r = _req(urllib.request.Request(base + "/api/queue/nope", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        d = json.loads(r.read().decode())
                         assert d["ok"] is False
                         # 404 post
-                        r = requests.post(base + "/api/other", headers=h,
-                                          json={}, timeout=5)
-                        assert r.status_code == 404
+                        r = _req(urllib.request.Request(base + "/api/other", data=json.dumps({}).encode(), headers=h, method="POST"))
+                        assert r.status == 404
                     finally:
                         pass
 
@@ -223,22 +216,18 @@ def test_serve_chat_sse_flow(monkeypatch, tmp_path):
     try:
         base = f"http://127.0.0.1:{port}"
         h = {"Content-Type": "application/json"}
-        r = requests.post(base + "/api/chat", headers=h,
-                          json={"message": "สวัสดี", "session": "s1"}, timeout=10,
-                          stream=True)
-        assert r.status_code == 200
+        r = _req(urllib.request.Request(base + "/api/chat", data=json.dumps({"message": "สวัสดี", "session": "s1"}).encode(), headers=h, method="POST"))
+        assert r.status == 200
         assert "text/event-stream" in r.headers["Content-Type"]
-        body = r.content.decode("utf-8")
+        body = r.read().decode("utf-8")
         assert "hi " in body
         assert "hi there" in body
         # empty message
-        r = requests.post(base + "/api/chat", headers=h, json={"message": ""},
-                          timeout=5)
-        assert r.status_code == 400
+        r = _req(urllib.request.Request(base + "/api/chat", data=json.dumps({"message": ""}).encode(), headers=h, method="POST"))
+        assert r.status == 400
         # bad json → 400
-        r = requests.post(base + "/api/chat", headers={**h, "Content-Length": "5"},
-                          data="xxxxx", timeout=5)
-        assert r.status_code == 400
+        r = _req(urllib.request.Request(base + "/api/chat", data="xxxxx".encode(), headers={**h, "Content-Length": "5"}, method="POST"))
+        assert r.status == 400
     finally:
         pass
 
@@ -262,10 +251,8 @@ def test_serve_chat_sse_stream_error(monkeypatch, tmp_path):
     t.start()
     time.sleep(0.8)
     try:
-        r = requests.post(f"http://127.0.0.1:{port}/api/chat",
-                          headers={"Content-Type": "application/json"},
-                          json={"message": "x"}, timeout=10, stream=True)
-        body = r.content.decode("utf-8")
+        r = _req(urllib.request.Request(f"http://127.0.0.1:{port}/api/chat", data=json.dumps({"message": "x"}).encode(), headers={"Content-Type": "application/json"}, method="POST"))
+        body = r.read().decode("utf-8")
         assert "kaboom" in body, body[:300]
     finally:
         pass
@@ -340,9 +327,9 @@ def test_serve_stats_module_fallbacks(monkeypatch, tmp_path):
     try:
         port, base, token = _serve(monkeypatch, tmp_path, extra_patches=patchers)
         h = {"X-Yousini-Token": token}
-        r = requests.get(base + "/api/stats", headers=h, timeout=5)
-        assert r.status_code == 200
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/stats", headers=h))
+        assert r.status == 200
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         # fallback dicts for failed modules
         assert "usage" in d and isinstance(d["usage"], dict)
@@ -363,24 +350,20 @@ def test_serve_lsp_all_methods(monkeypatch, tmp_path):
     try:
         h = {"X-Yousini-Token": token}
         # GET summary
-        r = requests.get(base + "/api/lsp/summary", headers=h, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/lsp/summary", headers=h))
+        assert json.loads(r.read().decode())["ok"] is True
         # workspace-symbols
-        r = requests.post(base + "/api/lsp/workspace-symbols", headers=h,
-                          json={"query": "Agent"}, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/lsp/workspace-symbols", data=json.dumps({"query": "Agent"}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
         body = {"file": "yousini.py", "line": 0, "character": 0}
         for method in ("hover", "definition", "references"):
-            r = requests.post(base + f"/api/lsp/{method}", headers=h, json=body,
-                              timeout=5)
-            assert "ok" in r.json(), method
-        r = requests.post(base + "/api/lsp/document-symbols", headers=h,
-                          json={"file": "yousini.py"}, timeout=5)
-        assert "ok" in r.json()
+            r = _req(urllib.request.Request(base + f"/api/lsp/{method}", data=json.dumps(body).encode(), headers=h, method="POST"))
+            assert "ok" in json.loads(r.read().decode()), method
+        r = _req(urllib.request.Request(base + "/api/lsp/document-symbols", data=json.dumps({"file": "yousini.py"}).encode(), headers=h, method="POST"))
+        assert "ok" in json.loads(r.read().decode())
         # unknown method -> ok=False
-        r = requests.post(base + "/api/lsp/nonexistent-method", headers=h,
-                          json={}, timeout=5)
-        assert r.json()["ok"] is False
+        r = _req(urllib.request.Request(base + "/api/lsp/nonexistent-method", data=json.dumps({}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is False
     finally:
         pass
 
@@ -404,34 +387,27 @@ def test_serve_market_enabled_branches(monkeypatch, tmp_path):
         port, base, token = _serve(monkeypatch, tmp_path, extra_patches=patchers)
         h = {"X-Yousini-Token": token}
         # catalog
-        r = requests.post(base + "/api/market/catalog", headers=h,
-                          json={"query": "x"}, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/market/catalog", data=json.dumps({"query": "x"}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
         # installed
-        r = requests.post(base + "/api/market/installed", headers=h, json={},
-                          timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/market/installed", data=json.dumps({}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
         # install missing source
-        r = requests.post(base + "/api/market/install", headers=h,
-                          json={"source": ""}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/market/install", data=json.dumps({"source": ""}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d.get("ok") is False and "source" in d.get("error", "")
         # install with source
-        r = requests.post(base + "/api/market/install", headers=h,
-                          json={"source": "p1"}, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/market/install", data=json.dumps({"source": "p1"}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
         # update
-        r = requests.post(base + "/api/market/update", headers=h,
-                          json={"id": "p1"}, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/market/update", data=json.dumps({"id": "p1"}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
         # uninstall (admin only, master token is admin)
-        r = requests.post(base + "/api/market/uninstall", headers=h,
-                          json={"id": "p1"}, timeout=5)
-        assert "ok" in r.json()
+        r = _req(urllib.request.Request(base + "/api/market/uninstall", data=json.dumps({"id": "p1"}).encode(), headers=h, method="POST"))
+        assert "ok" in json.loads(r.read().decode())
         # info
-        r = requests.post(base + "/api/market/info", headers=h,
-                          json={"id": "p1"}, timeout=5)
-        assert r.json()["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/market/info", data=json.dumps({"id": "p1"}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is True
     finally:
         for p in patchers:
             p.stop()
@@ -443,36 +419,30 @@ def test_serve_queue_notfound_branches(monkeypatch, tmp_path):
     try:
         h = {"X-Yousini-Token": token}
         # enqueue empty prompt
-        r = requests.post(base + "/api/queue/enqueue", headers=h,
-                          json={"prompt": ""}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/enqueue", data=json.dumps({"prompt": ""}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is False and "prompt" in d.get("error", "")
         # complete unknown id
-        r = requests.post(base + "/api/queue/complete", headers=h,
-                          json={"id": "nonexistent-xyz"}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/complete", data=json.dumps({"id": "nonexistent-xyz"}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is False and "งาน" in d.get("error", "")
         # fail unknown id
-        r = requests.post(base + "/api/queue/fail", headers=h,
-                          json={"id": "nonexistent-xyz"}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/fail", data=json.dumps({"id": "nonexistent-xyz"}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is False and "งาน" in d.get("error", "")
         # requeue unknown id -> ok True (returns None task)
-        r = requests.post(base + "/api/queue/requeue", headers=h,
-                          json={"id": "nonexistent-xyz"}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/requeue", data=json.dumps({"id": "nonexistent-xyz"}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         # get unknown id -> ok True, task None
-        r = requests.get(base + "/api/queue/get?id=nonexistent-xyz", headers=h,
-                         timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/get?id=nonexistent-xyz", headers=h))
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         # status + claim empty
-        r = requests.get(base + "/api/queue/status", headers=h, timeout=5)
-        assert r.json()["ok"] is True
-        r = requests.post(base + "/api/queue/claim", headers=h,
-                          json={"worker": "w1"}, timeout=5)
-        assert "claimed" in r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/status", headers=h))
+        assert json.loads(r.read().decode())["ok"] is True
+        r = _req(urllib.request.Request(base + "/api/queue/claim", data=json.dumps({"worker": "w1"}).encode(), headers=h, method="POST"))
+        assert "claimed" in json.loads(r.read().decode())
     finally:
         pass
 

@@ -10,10 +10,18 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import requests  # type: ignore
+import urllib.request
+import urllib.error
 
 import yousini
 
+
+def _req(req):
+    """Send a request; return the response object (even on HTTP errors)."""
+    try:
+        return urllib.request.urlopen(req)
+    except urllib.error.HTTPError as _e:
+        return _e
 
 def _free_port():
     s = socket.socket()
@@ -40,14 +48,12 @@ def test_serve_sse_branches(monkeypatch, tmp_path):
     time.sleep(0.8)
     base = f"http://127.0.0.1:{port}"
     try:
-        r = requests.post(base + "/api/chat",
-                          headers={"Content-Type": "application/json"},
-                          json={"message": "x"}, timeout=10, stream=True)
-        body = r.content.decode("utf-8")
+        r = _req(urllib.request.Request(base + "/api/chat", data=json.dumps({"message": "x"}).encode(), headers={"Content-Type": "application/json"}, method="POST"))
+        body = r.read().decode("utf-8")
         assert "turn-broken" in body, body[:300]
         # emit error path แล้ว server จบ chunked stream — connect อีกได้
-        r2 = requests.get(base + "/health", timeout=5)
-        assert r2.text == "ok"
+        r2 = _req(urllib.request.Request(base + "/health"))
+        assert r2.read().decode() == "ok"
     finally:
         pass
 
@@ -75,19 +81,16 @@ def test_serve_market_admin_403_and_bad_payload(monkeypatch, tmp_path):
         try:
             h = {"Content-Type": "application/json"}
             # bad payload -> payload={} -> market_json unknown action
-            r = requests.post(base + "/api/market/list", headers={**h, "X-Yousini-Token": "mt"},
-                              data="not-json", timeout=5)
-            assert r.status_code == 200
-            d = r.json()
+            r = _req(urllib.request.Request(base + "/api/market/list", data="not-json".encode(), headers={**h, "X-Yousini-Token": "mt"}, method="POST"))
+            assert r.status == 200
+            d = json.loads(r.read().decode())
             assert d["ok"] is False
             # GET market action (query param) -> unknown action
-            r = requests.get(base + "/api/market/installed?q=x",
-                             headers={"X-Yousini-Token": "mt"}, timeout=5)
-            assert r.json()["ok"] is True
+            r = _req(urllib.request.Request(base + "/api/market/installed?q=x", headers={"X-Yousini-Token": "mt"}))
+            assert json.loads(r.read().decode())["ok"] is True
             # GET catalog with q
-            r = requests.get(base + "/api/market/catalog?q=x",
-                             headers={"X-Yousini-Token": "mt"}, timeout=5)
-            assert r.json()["ok"] is True
+            r = _req(urllib.request.Request(base + "/api/market/catalog?q=x", headers={"X-Yousini-Token": "mt"}))
+            assert json.loads(r.read().decode())["ok"] is True
         finally:
             pass
 
@@ -109,24 +112,19 @@ def test_serve_queue_fail_and_notfound(monkeypatch, tmp_path):
     try:
         h = {"X-Yousini-Token": "q1"}
         # enqueue a real task
-        r = requests.post(base + "/api/queue/enqueue", headers=h,
-                          json={"prompt": "do work"}, timeout=5)
-        tid = r.json()["task"]["id"]
+        r = _req(urllib.request.Request(base + "/api/queue/enqueue", data=json.dumps({"prompt": "do work"}).encode(), headers=h, method="POST"))
+        tid = json.loads(r.read().decode())["task"]["id"]
         # claim then fail
-        requests.post(base + "/api/queue/claim", headers=h,
-                      json={"worker": "default"}, timeout=5)
-        r = requests.post(base + "/api/queue/fail", headers=h,
-                          json={"id": tid, "error": "nope"}, timeout=5)
-        d = r.json()
+        _req(urllib.request.Request(base + "/api/queue/claim", data=json.dumps({"worker": "default"}).encode(), headers=h, method="POST"))
+        r = _req(urllib.request.Request(base + "/api/queue/fail", data=json.dumps({"id": tid, "error": "nope"}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is True
         # complete unknown id
-        r = requests.post(base + "/api/queue/complete", headers=h,
-                          json={"id": "no-such-id", "result": "x"}, timeout=5)
-        d = r.json()
+        r = _req(urllib.request.Request(base + "/api/queue/complete", data=json.dumps({"id": "no-such-id", "result": "x"}).encode(), headers=h, method="POST"))
+        d = json.loads(r.read().decode())
         assert d["ok"] is False and "พบ" in d.get("error", "")
         # enqueue empty prompt
-        r = requests.post(base + "/api/queue/enqueue", headers=h,
-                          json={"prompt": ""}, timeout=5)
-        assert r.json()["ok"] is False
+        r = _req(urllib.request.Request(base + "/api/queue/enqueue", data=json.dumps({"prompt": ""}).encode(), headers=h, method="POST"))
+        assert json.loads(r.read().decode())["ok"] is False
     finally:
         pass
