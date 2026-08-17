@@ -45,8 +45,15 @@ jobs:
         run: python3 -m build
       - name: Verify wheel bundles all modules
         run: |
-          WHEEL=$(ls dist/*.whl)
-          python3 -m zipfile -l "$WHEEL" | grep -E "yousini_(interactive|ui|orchestrate|git|mcp)\.py$" | wc -l | grep -q '^5$'
-          echo "all core modules bundled"
+          python3 -c "
+          import zipfile, glob
+          w = zipfile.ZipFile(glob.glob('dist/*.whl')[0])
+          mods = ['yousini_interactive.py', 'yousini_ui.py', 'yousini_orchestrate.py', 'yousini_git.py', 'yousini_mcp.py']
+          missing = [m for m in mods if not any(m == n or m == n.split('/')[-1] for n in w.namelist())]
+          if missing:
+              print('missing modules:', missing)
+              raise SystemExit(1)
+          print('all core modules bundled')
+          "
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
