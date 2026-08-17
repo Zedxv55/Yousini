@@ -1,18 +1,23 @@
 # Yousini
 
-**Yousini** is a local, terminal-based coding agent inspired by Claude Code. It runs entirely on your machine and connects to any OpenAI-compatible API (Groq, OpenAI, OpenRouter, DeepSeek, Mistral and more). It can run shell commands, read and write files, search the web, manage memory and sessions, expose a web UI, and integrate with other agents through MCP.
+**Yousini** is a free, local-first AI Agent CLI for developers who want an intelligent assistant directly in the terminal. It runs on your own machine, uses OpenAI-compatible providers, and gives you practical tools for coding, files, shell commands, web research, project context, sessions, and automation.
 
-Yousini is a terminal coding agent ที่รันในเครื่องของคุณเอง ทำงานร่วมกับ API ที่รองรับรูปแบบ OpenAI (Groq, OpenAI, OpenRouter, DeepSeek, Mistral และอื่น ๆ) มีความสามารถในการรันคำสั่ง shell, อ่าน/เขียน/แก้ไขไฟล์, ค้นหาเว็บ, จัดการความจำและ session, มี Web UI และเชื่อมต่อกับ agent อื่นผ่าน MCP
+**Yousini** คือ **Free AI Agent CLI** สำหรับนักพัฒนาที่ต้องการผู้ช่วย AI ใน Terminal โดยให้โค้ดและข้อมูลอยู่ในเครื่องของคุณเอง เชื่อมต่อได้กับผู้ให้บริการ API ที่รองรับมาตรฐาน OpenAI เช่น Groq, OpenAI, OpenRouter, DeepSeek และ Mistral พร้อมเครื่องมือสำหรับอ่าน/เขียน/แก้ไขไฟล์ รันคำสั่ง shell ค้นหาเว็บ จัดการ session ความจำ งานเบื้องหลัง และการทำงานร่วมกับ MCP
 
 | Version | License | Language | Python |
 | --- | --- | --- | --- |
-| 3.10.0 | MIT | Python 3.10+ | English / Thai |
+| 3.11.0 | MIT | English / Thai | Python 3.10+ |
 
 [![CI](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml/badge.svg)](https://github.com/Zedxv55/Yousini/actions/workflows/ci.yml)
 
 ## Changelog / บันทึกการเปลี่ยนแปลง
 
-## Changelog / บันทึกการเปลี่ยนแปลง
+### 3.11.0 — Free AI Agent CLI Release
+
+- เพิ่ม `/persona` สำหรับเลือกโทนการตอบ `casual`, `formal`, `concise`, `verbose` และ `reset`
+- เพิ่ม `/compact` สำหรับย่อบริบทของ session เพื่อลดความยาว prompt และรักษาบทสนทนาสำคัญ
+- ปรับปรุงชุดทดสอบและเพิ่ม coverage เป็น 74%
+- ปรับปรุงการเผยแพร่แพ็กเกจบน PyPI และการตรวจสอบ wheel ก่อน release
 
 ### 3.10.0 (2026-08-16) — Progress Bars + Token Streaming
 
@@ -81,9 +86,9 @@ Yousini is a terminal coding agent ที่รันในเครื่อง
 
 ## Overview / ภาพรวม
 
-Yousini gives you a Claude Code-style assistant inside your own terminal. It is a single-file Python agent with rich terminal UI (Rich), streaming responses, tool calling, session persistence and provider fallback.
+Yousini turns your terminal into a focused AI workspace. It combines a Rich-powered terminal interface, streaming responses, tool calling, persistent sessions, project instructions, and provider fallback in a lightweight Python CLI.
 
-Yousini ให้คุณมีผู้ช่วยสไตล์ Claude Code ในเทอร์มินัลของคุณเอง เป็น Python agent ไฟล์เดียวพร้อม UI หรูหรา (Rich), การตอบสนองแบบ streaming, tool calling, การบันทึก session และการสลับ provider อัตโนมัติ
+Yousini เปลี่ยน Terminal ให้เป็นพื้นที่ทำงานร่วมกับ AI ที่ใช้งานได้จริง โดยรวม Rich terminal UI, การตอบแบบ streaming, tool calling, session ถาวร, ไฟล์คำสั่งประจำโปรเจกต์ และระบบสลับ provider อัตโนมัติไว้ใน Python CLI ที่ติดตั้งและควบคุมได้ง่าย
 
 Key capabilities / ความสามารถหลัก:
 
@@ -103,9 +108,9 @@ Key capabilities / ความสามารถหลัก:
 | Area | Description / รายละเอียด |
 | --- | --- |
 | Terminal UI | Rich CLI with banner, streaming output, colored diff and syntax highlight |
-| Web UI | `yousini serve` launches a Codex-style web interface and SSE API on `http://localhost:8787` |
+| Web UI | `yousini serve` launches a local web interface and SSE API on `http://localhost:8787` |
 | Remote connect | `yousini connect <url>` controls a running Yousini from the CLI |
-| Context file | `YOUSINI.md` acts like `CLAUDE.md` for persistent project instructions |
+| Context file | `YOUSINI.md` stores persistent project instructions for the current workspace |
 | Skills | Markdown files in `skills/` are auto-loaded into the system prompt |
 | Hooks | `pre_tool` / `post_tool` / `session_start` / `session_stop` lifecycle scripts |
 | Sessions | `/save`, `/load`, `/sessions`, `yousini resume`, SQLite search with `/search` |
@@ -113,7 +118,7 @@ Key capabilities / ความสามารถหลัก:
 | Self-improvement | `skill_create` / `skill_patch` lets the agent create and update skills |
 | Background shell | Long-running commands with `run_in_background` and `/jobs` |
 | Checkpoint / Rollback | Auto `git commit` before edits, `/rollback` to restore |
-| MCP server | `yousini mcp` exposes Yousini tools to Claude Code and other MCP clients |
+| MCP server | `yousini mcp` exposes Yousini tools to compatible MCP clients |
 | MCP client | `yousini mcp-add <name> <cmd>` connects to external MCP servers |
 | Provider fallback | Multiple API keys and automatic failover |
 | Cron jobs | Scheduled tasks with `yousini cron` and `/cron` |
@@ -269,7 +274,7 @@ YOUSINI_BASE_URL=https://api.openai.com/v1
 YOUSINI_API_KEY=sk-...
 YOUSINI_MODEL=gpt-4o
 
-# OpenRouter (Claude, Gemini, Llama and more)
+# OpenRouter (เลือกใช้โมเดลได้หลายแบบ)
 YOUSINI_BASE_URL=https://openrouter.ai/api/v1
 YOUSINI_API_KEY=sk-or-...
 YOUSINI_MODEL=anthropic/claude-3.5-sonnet
