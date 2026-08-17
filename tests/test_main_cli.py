@@ -61,6 +61,8 @@ def test_main_init(capsys, tmp_path):
 # ---------------------------------------------------------------------------
 # Agent shell / edit_file / read_file
 # ---------------------------------------------------------------------------
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="shell() ใช bash")
 def test_shell_echo(agent):
     out = agent.shell("echo hello123")
     assert "hello123" in out

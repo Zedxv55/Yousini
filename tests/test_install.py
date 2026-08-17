@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import sys
 
 import install
 
@@ -19,6 +20,8 @@ def isolate(tmp_path, monkeypatch):
     yield
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only")
 def test_write_launcher_posix(tmp_path):
     launcher = install._write_launcher()
     assert launcher.exists()
@@ -27,6 +30,8 @@ def test_write_launcher_posix(tmp_path):
     assert "exec" in text and "$@" in text
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only")
 def test_add_to_path_creates_rcfile(tmp_path):
     install._add_to_path()
     rc = Path.home() / ".bashrc"
@@ -42,11 +47,15 @@ def test_add_to_path_zshrc(tmp_path):
     assert (Path.home() / ".zshrc").read_text(encoding="utf-8").startswith("# zsh")
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only")
 def test_remove_from_path_posix():
     changed, msg = install._remove_from_path()
     assert not changed and "เอง" in msg
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only")
 def test_install_posix(tmp_path, capsys):
     rc = Path.home() / ".bashrc"
     rc.write_text("old\n", encoding="utf-8")
