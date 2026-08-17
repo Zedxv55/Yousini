@@ -82,6 +82,8 @@ def test_install_pip_user(tmp_path):
     assert "--user" in cc.call_args[0][0]
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX launcher")
 def test_uninstall_removes_launcher(tmp_path):
     install.BIN.mkdir(parents=True)
     (install.BIN / "yousini").write_text("#!/bin/sh\n", encoding="utf-8")
