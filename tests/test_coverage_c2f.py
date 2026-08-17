@@ -54,6 +54,8 @@ def test_symbols_tool_bad(agent):
 
 
 # ---- git_tool ----
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows runner ไมม wsl/echo")
 def test_git_tool_log(agent, tmp_path):
     import subprocess as _sp
     _sp.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
@@ -166,6 +168,8 @@ def test_jobs(agent):
 
 
 # ---- _exec_tool path ----
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows runner ไมม wsl/echo")
 def test_exec_tool_shell(agent, monkeypatch):
     agent.allow_shell = True
     yousini._exec_tool(agent, "shell", {"command": "echo hi", "timeout": 5}, "t1")

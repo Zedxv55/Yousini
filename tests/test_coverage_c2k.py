@@ -275,6 +275,8 @@ def test_run_turn_events_allowed_tool(agent, monkeypatch):
 
 # ---------- Group D: _setup_readline ----------
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="readline ไมมบน Windows")
 def test_setup_readline(monkeypatch):
     import readline as rl_mod
     monkeypatch.setattr(yousini, "readline", rl_mod)

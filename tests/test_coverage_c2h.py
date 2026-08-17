@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """C2 (round 8): cover run_turn_events branches, hook blocks, quiet mode, _prepare_user_content"""
 import json
+import sys
 from unittest import mock
 
 import pytest
@@ -94,6 +95,8 @@ def test_turn_bad_json_args(agent, monkeypatch):
 
 
 # ---- _exec_tool quiet mode (spinner) ----
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows runner ไมม wsl/echo")
 def test_exec_tool_quiet_mode(agent, monkeypatch):
     agent.allow_shell = True
     agent.quiet_mode = True
