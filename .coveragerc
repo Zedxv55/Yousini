@@ -1,6 +1,9 @@
 [run]
 source = .
-omit = /tmp/*
+omit =
+    /tmp/pytest-of-root/*
+    tests/*
+    */tests/*
 
 [report]
 exclude_lines =

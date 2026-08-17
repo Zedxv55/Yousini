@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Yousini — Local Coding Agent สไตล์ Claude Code (เชื่อมต่อทั้งในเครื่องและออนไลน์)
 รับคำสั่งภาษาธรรมชาติ ทำงานบนเครื่องจริงได้: shell / อ่าน-เขียน-แก้ไฟล์ / ค้นหา
@@ -21,22 +20,22 @@ Yousini — Local Coding Agent สไตล์ Claude Code (เชื่อม�
 รัน:  yousini        (หรือ python3 yousini.py)
 """
 
-import os
-import sys
+import atexit
+import difflib
 import io
 import json
+import os
 import re
 import shutil
-import atexit
-import threading
 import subprocess
-import difflib
+import sys
+import threading
 import time
-import urllib.request
-import urllib.parse
 import urllib.error
-from pathlib import Path
+import urllib.parse
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 # readline มีเฉพาะ Unix; บน Windows ให้ข้ามได้ (ประวัติ arrow-key จะไม่ทำงาน)
 try:
@@ -76,39 +75,60 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from openai import OpenAI, BadRequestError
-from rich.console import Console, Group
-from rich.markdown import Markdown
-from rich.syntax import Syntax
+from openai import BadRequestError, OpenAI
+from rich.console import Console
 from rich.live import Live
-from rich.text import Text
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner
-from rich.table import Table
+from rich.syntax import Syntax
+from rich.text import Text
+
+from yousini_interactive import (
+    ProgressBars as _ProgressBars,
+)
 
 # ---- Interactive features (yousini_interactive.py) — command palette / typewriter / progress
 from yousini_interactive import (
     command_palette as _ui_palette,
-    typewriter_md as _ui_typewriter,
-    typewriter_stream as _ui_typewriter_stream,
-    ProgressBars as _ProgressBars,
 )
+from yousini_interactive import (
+    typewriter_md as _ui_typewriter,
+)
+from yousini_interactive import (
+    typewriter_stream as _ui_typewriter_stream,
+)
+from yousini_ui import (
+    _width as _ui_width,
+)
+from yousini_ui import (
+    cmd_hints as _ui_cmd_hints,
+)
+from yousini_ui import (
+    error_box as _ui_error,
+)
+from yousini_ui import (
+    get_theme as _ui_theme,
+)
+from yousini_ui import (
+    set_theme as _ui_set_theme,
+)
+from yousini_ui import (
+    status_hud as _ui_status,
+)
+from yousini_ui import (
+    tool_call as _ui_tool_call,
+)
+from yousini_ui import (
+    tool_result as _ui_tool_result,
+)
+from yousini_ui import (
+    user_bubble as _ui_user,
+)
+
 # ---- TUI Design System (yousini_ui.py) — สี/กรอบ/สถานะมาตรฐานวัน 3.8.1 ----
 from yousini_ui import (
     welcome_banner as _ui_welcome,
-    user_bubble as _ui_user,
-    tool_call as _ui_tool_call,
-    tool_result as _ui_tool_result,
-    status_hud as _ui_status,
-    error_box as _ui_error,
-    warn_box as _ui_warn,
-    cmd_hints as _ui_cmd_hints,
-    set_theme as _ui_set_theme,
-    get_theme as _ui_theme,
-    _width as _ui_width,
-    ok_line as _ui_ok,
-    cancel_line as _ui_cancel,
 )
 
 console = Console()
@@ -116,22 +136,19 @@ console = Console()
 # ---- Monetization foundation (v3.0) — billing/sponsor/usage — ล้มเหลวได้โดยไม่พังตัวหลัก ----
 _HAS_MONET = False
 try:
-    from yousini_billing import TIERS as BILL_TIERS
     from yousini_billing import activate as _billing_activate
     from yousini_billing import deactivate as _billing_deactivate
     from yousini_billing import tier_info as _billing_tier_info
-    from yousini_billing import entitlement as _billing_entitlement
     from yousini_sponsor import sponsor_line as _sponsor_line
     from yousini_sponsor import sponsor_status as _sponsor_status
     from yousini_usage import is_enabled as _usage_enabled
-    from yousini_usage import set_enabled as _usage_set_enabled
     from yousini_usage import record_tokens as _usage_record_tokens
     from yousini_usage import record_tool as _usage_record_tool
     from yousini_usage import record_turn as _usage_record_turn
-    from yousini_usage import summary as _usage_summary
-    from yousini_usage import summary_short as _usage_summary_short
     from yousini_usage import report as _usage_report
     from yousini_usage import reset as _usage_reset
+    from yousini_usage import set_enabled as _usage_set_enabled
+    from yousini_usage import summary as _usage_summary
     _HAS_MONET = True
 except Exception:
     pass
@@ -342,8 +359,13 @@ def _fix_provider(p: dict) -> dict:
 
 def _retryable(e) -> bool:
     """error ที่ควรลอง provider ถัดไป (auth/โค้ต้า/network/5xx)"""
-    from openai import (AuthenticationError, RateLimitError, APIConnectionError,
-                        InternalServerError, Timeout)
+    from openai import (
+        APIConnectionError,
+        AuthenticationError,
+        InternalServerError,
+        RateLimitError,
+        Timeout,
+    )
     if isinstance(e, (AuthenticationError, RateLimitError, APIConnectionError,
                       InternalServerError, Timeout)):
         return True
@@ -437,7 +459,7 @@ def _strip_tags(s: str) -> str:
 
 
 def _html_to_text(html: str) -> str:
-    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.DOTALL | re.IGNORECASE)
     html = re.sub(r"<[^>]+>", " ", html)
     for a, b in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
                  ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")]:
@@ -1197,7 +1219,7 @@ class Agent:
                 border = C_OK
             console.print(Panel(Text(command, style="bold white"), title=title,
                                 border_style=border, padding=(0, 1)))
-            ans = _safe_input(f"  [y] รัน   [N] ยกเลิก   [e] แก้ไข  ? ").strip().lower()
+            ans = _safe_input("  [y] รัน   [N] ยกเลิก   [e] แก้ไข  ? ").strip().lower()
             if ans in ("e", "edit"):
                 return self.shell(_safe_input("  พิมพ์คำสั่งใหม่: ").strip(), timeout, run_in_background)
             if ans not in ("y", "yes", "1"):
@@ -1537,7 +1559,14 @@ class Agent:
 
     def git_tool(self, action: str = "log", n: int = 10, file: str = "", line: int = 1) -> str:
         """ใช้ประวัติ git เป็น context: log|full|status|diff|blame"""
-        from yousini_git import recent_log, full_log, status_short, diff_stat, blame, is_repo
+        from yousini_git import (
+            blame,
+            diff_stat,
+            full_log,
+            is_repo,
+            recent_log,
+            status_short,
+        )
         if not is_repo(self.cwd):
             return "(ไม่อยู่ใน git repo — ข้ามการใช้งาน git)"
         if action == "log":
@@ -1593,8 +1622,9 @@ class Agent:
     def dev_check_tool(self, scope: str = "all") -> str:
         """รวมตรวจโปรเจกต์: all|status|compile|test|lint — สถานะ git, ไวยากรณ์ Python, test, lint"""
         scope = (scope or "all").lower()
-        from yousini_git import status_short
         from pathlib import Path as _Path
+
+        from yousini_git import status_short
         _pb = _ProgressBars()
         _pb.start()
         parts = []
@@ -1833,20 +1863,20 @@ def web_search_robust(query: str, max_results: int = 5) -> str:
             with urllib.request.urlopen(req, timeout=25) as r:
                 html = r.read().decode("utf-8", errors="replace")
             if kind in ("html", "lite"):
-                titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
+                titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
                 links = re.findall(r'class="result__a"[^>]*href="([^"]+)"', html)
-                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)
+                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
                 if not titles:
                     # fallback pattern สำหรับ lite.ddg
-                    titles = re.findall(r'<a[^>]+class="result-link"[^>]*>(.*?)</a>', html, re.S)
+                    titles = re.findall(r'<a[^>]+class="result-link"[^>]*>(.*?)</a>', html, re.DOTALL)
                     links = re.findall(r'<a[^>]+class="result-link"[^>]+href="([^"]+)"', html)
             else:  # bing
                 titles = re.findall(r'<li class="b_algo"[^>]*>.*?<h2>.*?<a[^>]*>(.*?)</a>',
-                                    html, re.S)
+                                    html, re.DOTALL)
                 links = re.findall(r'<li class="b_algo"[^>]*>.*?<h2>.*?<a[^>]+href="([^"]+)"',
-                                   html, re.S)
+                                   html, re.DOTALL)
                 snippets = re.findall(r'<li class="b_algo"[^>]*>.*?<p[^>]*>(.*?)</p>',
-                                      html, re.S)
+                                      html, re.DOTALL)
             out = []
             for i in range(min(max_results, len(titles))):
                 t = _strip_tags(titles[i]).strip()
@@ -2440,6 +2470,7 @@ _REPL_HINTS = {
     "/help": "แสดงทุกคำสั่ง", "/clear": "ล้างประวัติแชท", "/history": "ดูประวัติ",
     "/memory": "ดู/จัดการความจำระยะยาว", "/compact": "ยุบริบท", "/quiet": "ซ่อนรายละเอียด tool",
     "/providers": "provider + ลำดับสำรอง", "/usage": "สถิติ token", "/todos": "รายการงาน",
+    "/persona": "สับสวิตช์บุคลิก prompt (casual/formal/concise/verbose/reset)",
     "/jobs": "งาน background", "/skills": "skills ที่โหลด", "/hooks": "hooks",
     "/checkpoint": "git commit จุดชั่วคราว",
     "/rollback": "ย้อน checkpoint",
@@ -2507,7 +2538,6 @@ def _gradient(text: str, colors):
 def _print_banner(agent: Agent):
     """จอเปิด: delegete ไปยัง yousini_ui.welcome_banner (HUD + คำแนะนำปุ่มลัด)"""
     _ui_welcome(agent)
-    return
 
 def _print_help():
     lines = [
@@ -2515,6 +2545,7 @@ def _print_help():
         ("/clear", "ล้างประวัติการสนทนา"),
         ("/history", "แสดงประวัติข้อความทั้งหมด"),
         ("/model <ชื่อ>", "เปลี่ยนโมเดล เช่น /model openai/gpt-oss-120b"),
+        ("/persona <ชื่อ>", "สับสวิตช์บุคลิก prompt: casual, formal, concise, verbose, reset"),
         ("/cwd <โฟลเดอร์>", "เปลี่ยนโฟลเดอร์ทำงาน"),
         ("/approve on|off", "รัน shell อัตโนมัติโดยไม่ถาม"),
         ("/login", "เข้าสู่ระบบ/เลือก provider และ API key"),
@@ -2821,7 +2852,7 @@ def login_mode():
         t = Text()
         for i, m in enumerate(p["models"]):
             t.append(f"  {i+1}. {m}\n", style="cyan")
-        t.append(f"  0. กำหนดเอง (custom)\n", style="yellow")
+        t.append("  0. กำหนดเอง (custom)\n", style="yellow")
         console.print(t)
         model_choice = input(f"เลือกโมเดล (1-{len(p['models'])}, 0=กำหนดเอง): ").strip()
         if model_choice == "0":
@@ -2954,6 +2985,7 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
     import http.server
     import socketserver
     import threading
+
     from yousini_lsp import LSPEngine, _path_to_uri
 
     web_ui = _load_webui()
@@ -3054,11 +3086,17 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
     def market_json(action: str, payload: dict):
         """marketplace ผ่าน HTTP — เรียกโมดูล yousini_marketplace โดยตรง"""
         try:
-            from yousini_marketplace import (search_catalog, fetch_catalog, installed_list,
-                                             install as _mi, uninstall as _mu,
-                                             update as _mup, pkg_info,
-                                             marketplace_enabled, format_info,
-                                             registry_url)
+            from yousini_marketplace import (
+                format_info,
+                installed_list,
+                marketplace_enabled,
+                pkg_info,
+                registry_url,
+                search_catalog,
+            )
+            from yousini_marketplace import install as _mi
+            from yousini_marketplace import uninstall as _mu
+            from yousini_marketplace import update as _mup
             cfg = _read_cfg_light()
             if not marketplace_enabled(cfg):
                 return {"ok": False, "error": "marketplace ถูกปิดใช้งาน"}
@@ -3085,8 +3123,16 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
 
     def queue_json(action: str, payload: dict):
         """agent collaboration queue ผ่าน HTTP"""
-        from yousini_queue import (enqueue, get, claim, complete, fail, requeue,
-                                   list_tasks, counts)
+        from yousini_queue import (
+            claim,
+            complete,
+            counts,
+            enqueue,
+            fail,
+            get,
+            list_tasks,
+            requeue,
+        )
         if action == "status":
             return {"ok": True, "counts": counts(),
                     "tasks": list_tasks(limit=20)}
@@ -3522,11 +3568,20 @@ def lsp_main(root: str = "."):
 
 def marketplace_main(argv=None):
     """CLI: yousini marketplace <list|search|installed|install|uninstall|update|info>"""
-    from yousini_marketplace import (fetch_catalog, search_catalog, installed_list,
-                                     install as _mkt_install, uninstall as _mkt_uninstall,
-                                     update as _mkt_update, update_all as _mkt_update_all,
-                                     pkg_info, format_catalog, format_installed,
-                                     format_info, marketplace_enabled, registry_url)
+    from yousini_marketplace import (
+        fetch_catalog,
+        format_catalog,
+        format_info,
+        format_installed,
+        marketplace_enabled,
+        pkg_info,
+        registry_url,
+        search_catalog,
+    )
+    from yousini_marketplace import install as _mkt_install
+    from yousini_marketplace import uninstall as _mkt_uninstall
+    from yousini_marketplace import update as _mkt_update
+    from yousini_marketplace import update_all as _mkt_update_all
     argv = list(argv or [])
     cfg = _read_cfg_light()
 
@@ -3609,8 +3664,18 @@ def marketplace_main(argv=None):
 
 def agent_main(argv=None):
     """CLI: yousini agent <send|status|result|requeue|prune|clear> + yousini work [--once]"""
-    from yousini_queue import (enqueue, get, counts, list_tasks, requeue, prune_done,
-                               clear, reclaim_stale, format_task, format_queue)
+    from yousini_queue import (
+        clear,
+        counts,
+        enqueue,
+        format_queue,
+        format_task,
+        get,
+        list_tasks,
+        prune_done,
+        reclaim_stale,
+        requeue,
+    )
     argv = list(argv or [])
     if not argv:
         console.print(Panel(format_queue(list_tasks(), title="Queue") + "\n\n" +
@@ -3682,9 +3747,12 @@ def work_main(once=False, interval=5.0, worker="default", max_tasks=50):
 
 def team_main(argv=None):
     """CLI: yousini team <status|init|join|leave|users|set-registry>"""
-    from yousini_team import (team_status, init as _init, join as _join, leave as _leave,
-                              users as _users, set_registry as _set_reg, format_status,
-                              resolve_registry)
+    from yousini_team import format_status, resolve_registry, team_status
+    from yousini_team import init as _init
+    from yousini_team import join as _join
+    from yousini_team import leave as _leave
+    from yousini_team import set_registry as _set_reg
+    from yousini_team import users as _users
     argv = list(argv or [])
     if not argv:
         console.print(Panel(format_status(team_status(load_config())), title="Team workspace",
@@ -3958,10 +4026,14 @@ def _format_tier(ti: dict) -> str:
 
 def _repl_market(args: str):
     """/market ... — ติดตั้ง/ค้นหา skills & tool plugins จาก marketplace"""
-    from yousini_marketplace import (search_catalog, install as _mkt_install,
-                                     uninstall as _mkt_uninstall, installed_list,
-                                     format_installed, format_catalog,
-                                     marketplace_enabled, registry_url)
+    from yousini_marketplace import (
+        format_catalog,
+        format_installed,
+        marketplace_enabled,
+        search_catalog,
+    )
+    from yousini_marketplace import install as _mkt_install
+    from yousini_marketplace import uninstall as _mkt_uninstall
     cfg = _read_cfg_light()
     if not marketplace_enabled(cfg):
         console.print(Text("Marketplace ถูกปิดใช้งาน (config.json → marketplace_enabled)", style="red"))
@@ -4052,7 +4124,7 @@ def _REPL_COMMANDS(agent):
         ("/jobs", "งาน background"), ("/skills", "skills ที่โหลด"), ("/hooks", "hooks"),
         ("/checkpoint", "git commit จุดชั่วคราว"), ("/compact", "ยุบริบทเก่าเป็นสรุปสั้น ๆ"), ("/rollback", "ย้อน checkpoint"), ("/undo", "ย้อนการแก้ไฟลชุดล่าสุด (เท่า /rollback)"), ("/diff", "แสดง diff สีของไฟลที่แก้ (git diff)"),
         ("/dev", "รวมตรวจโปรเจกต์"), ("/scaffold", "โครงโปรเจกต์"), ("/update", "ตรวจ/อัปเดต"), ("/config", "ดู/ตั้งค่า config"),
-        ("/stream", "typewriter mode on|off"), ("/palette", "เปิด command palette"),
+        ("/stream", "typewriter mode on|off"), ("/persona", "สับสวิตช์บุคลิก prompt (casual/formal/concise/verbose/reset)"), ("/palette", "เปิด command palette"),
         ("/exit", "ออก"), ("/quit", "ออก"), ("/export", "สงออก session"), ("/import", "นำเข้า session"),
     ]
 def _run_repl(agent: Agent):
@@ -4126,6 +4198,31 @@ def _run_repl(agent: Agent):
                                   content=content,
                                   old_text=content if act in ("remove", "replace") else "")
             console.print(Text(r, style="green" if "ต้อง" not in r else "yellow")); continue
+        if low.startswith("/persona"):
+            parts = user_input[8:].strip().lower()
+            _PERSONAS = {
+                "casual": "คุยกับผู้ใช้ด้วยน้ำเสียงเป็นกันเอง สบาย ๆ ใช้ภาษาไทยทั่วไป ไม่ต้องทางการ แต่ยังต้องแม่นยำ",
+                "formal": "คุยกับผู้ใช้ด้วยน้ำเสียงเป็นทางการ เหมือนที่ปรึกษามืออาชีพ ภาษาเรียบร้อย",
+                "concise": "ตอบสั้นกระชับตรงประเด็น ไม่อธิบายเกิน เห็นผลส่วนเกินให้ละ",
+                "verbose": "อธิบายละเอียดทุกขั้นตอน เห็นภาพรวมพร้อมรายละเอียด รองรับการเรียนรู้",
+            }
+            if parts in _PERSONAS:
+                base = agent.system_prompt.split("## PERSONA")[0]
+                agent.system_prompt = (base + "\n## PERSONA\n" + _PERSONAS[parts]).strip()
+                for _msg in agent.messages:
+                    if _msg["role"] == "system":
+                        _msg["content"] = agent.system_prompt
+                console.print(Text(f"Persona: {parts} — system prompt ปรับแล้ว", style=C_OK)); continue
+            if parts in ("reset", "default"):
+                agent.system_prompt = agent.system_prompt.split("## PERSONA")[0].strip()
+                for _msg in agent.messages:
+                    if _msg["role"] == "system":
+                        _msg["content"] = agent.system_prompt
+                console.print(Text("Persona: reset — กลับ prompt เดิม", style="yellow")); continue
+            if not parts:
+                console.print(Text("ใช้: /persona casual|formal|concise|verbose|reset", style="yellow")); continue
+            console.print(Text(f"Persona ไม่รู้จัก: {parts} — ใช้ casual/formal/concise/verbose/reset", style="yellow")); continue
+
         if low == "/compact":
             console.print(Text(agent.compact(), style=C_OK)); continue
         if low == "/quiet on" or low == "/quiet":
@@ -4176,13 +4273,16 @@ def _run_repl(agent: Agent):
             _repl_market(user_input[8:].strip())
             continue
         if low == "/team" or low.startswith("/team "):
-            from yousini_team import team_status, format_status
+            from yousini_team import format_status, team_status
             console.print(Panel(format_status(team_status(_read_cfg_light())),
                                 title="Team workspace", border_style="cyan", padding=(1, 2)))
             continue
         if low == "/agent" or low.startswith("/agent "):
-            from yousini_queue import enqueue as _qe, get as _qget, counts as _qcounts, \
-                list_tasks as _qlist, format_task, format_queue
+            from yousini_queue import counts as _qcounts
+            from yousini_queue import enqueue as _qe
+            from yousini_queue import format_queue, format_task
+            from yousini_queue import get as _qget
+            from yousini_queue import list_tasks as _qlist
             parts = user_input[7:].strip().split(None, 2)
             sub = parts[0].lower() if parts else "status"
             if sub == "send" and len(parts) >= 3:
@@ -4679,7 +4779,7 @@ def main():
 
     # ---- subcommand: scaffold ----
     if argv and argv[0] == "scaffold":
-        from yousini_scaffold import scaffold, kinds_text
+        from yousini_scaffold import kinds_text, scaffold
         if len(argv) >= 3:
             r = scaffold(argv[1], argv[2])
             console.print(Panel(r, title="Scaffold",
@@ -4735,7 +4835,7 @@ def main():
 
     # ---- subcommand: usage (v3.8 report) ----
     if argv and argv[0] == "usage":
-        from yousini_usage import summary, report
+        from yousini_usage import report, summary
         rest = argv[1:]
         if rest and rest[0].lower() in ("report", "weekly", "daily", "monthly"):
             period = rest[0].lower()
