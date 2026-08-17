@@ -59,6 +59,8 @@ def test_symbols_tool_bad(agent):
 def test_git_tool_log(agent, tmp_path):
     import subprocess as _sp
     _sp.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "config", "user.name", "test"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=str(tmp_path), capture_output=True)
     _sp.run(["git", "commit", "--allow-empty", "-m", "x"], cwd=str(tmp_path), capture_output=True)
     out = agent.git_tool("log", n=5)
     assert "x" in out

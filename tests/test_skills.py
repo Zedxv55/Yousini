@@ -70,6 +70,8 @@ def test_install_no_md_files(tmp_path, capsys):
     root = tmp_path / "empty"
     root.mkdir()
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"],
                    cwd=root, check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
