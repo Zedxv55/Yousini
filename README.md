@@ -62,6 +62,7 @@
 ## Table of Contents / สารบัญ
 
 - [Overview / ภาพรวม](#overview--ภาพรวม)
+- [Feature Map / แผนที่ฟีเจอร์](#feature-map--แผนที่ฟีเจอร์)
 - [Features / คุณสมบัติ](#features--คุณสมบัติ)
 - [Installation / การติดตั้ง](#installation--การติดตั้ง)
 - [Configuration / การตั้งค่า](#configuration--การตั้งค่า)
@@ -104,12 +105,43 @@ Key capabilities / ความสามารถหลัก:
 
 ---
 
+## Feature Map / แผนที่ฟีเจอร์
+
+Yousini รวมความสามารถของ AI agent ที่ใช้งานในงานพัฒนาจริงไว้ใน CLI เดียว โดยผู้ใช้เลือกทำงานผ่าน **Terminal**, **Web App** หรือ **Queue worker** ได้ตามลักษณะงาน ตารางนี้สรุปสิ่งที่ใช้งานได้ในโครงการปัจจุบันอย่างกระชับ ส่วนคำสั่งและตัวอย่างละเอียดอยู่ในหัวข้อถัดไป
+
+| กลุ่มความสามารถ | สิ่งที่ทำได้ | จุดเริ่มต้นที่ใช้บ่อย |
+| --- | --- | --- |
+| **Terminal & Web App** | Rich TUI, Markdown streaming, diff/syntax highlighting, themes, command palette, Web UI และ SSE API | `yousini`, `yousini serve`, `/palette`, `/theme` |
+| **AI providers** | เชื่อมต่อผู้ให้บริการที่รองรับ OpenAI-compatible API, profile แยกการตั้งค่า และ provider fallback | `.env`, `yousini config`, `/model` |
+| **Agent tools** | อ่าน/เขียน/แก้ไข/ค้นหาไฟล์, shell, Python, web fetch/search, todos และ subagents | สั่งผ่านแชทหรือให้ agent เลือก tool |
+| **Code intelligence** | Tree-sitter symbol index, definitions, references, LSP และ Git-aware context | `yousini lsp`, `/symbols`, `/git` |
+| **Context & sessions** | `YOUSINI.md`, skills, long-term memory, save/load/search, export/import และ compact context | `/save`, `/load`, `/search`, `/compact` |
+| **Planning & control** | plan, todos, persona, feature flags, workflow templates และ usage reports | `/plan`, `/todos`, `/persona`, `/workflow` |
+| **Project delivery** | checkpoint/rollback, dev checks, scaffolding, Git PR flow, plugins และ self-update | `/checkpoint`, `yousini dev`, `yousini pr` |
+| **Automation & integrations** | queue workers, cron, webhooks, Telegram gateway, MCP server/client และ remote connect | `yousini agent`, `yousini work`, `yousini cron`, `yousini mcp` |
+| **Collaboration UI** | Dashboard, Queue Monitor, LSP, Marketplace และ Team panels ใน Web UI | `yousini serve` |
+| **Safety** | approval ก่อน shell, safe/no-write modes, diff preview, hook controls และ isolated shell แบบ opt-in | `--safe`, `--no-shell`, `--sandbox` |
+
+### Reliability check / การตรวจความเสถียรของคิว
+
+โครงการมี stress test แบบควบคุมสำหรับเส้นทาง **enqueue → claim → complete → result** ของ queue และ worker จริง เพื่อให้ทดสอบซ้ำได้โดยไม่ขึ้นกับผู้ให้บริการ AI ภายนอก:
+
+```bash
+YOUSINI_API_KEY=test-key python scripts/stress_queue_100.py
+```
+
+การรันล่าสุดในสภาพแวดล้อมควบคุมทำครบ **100/100 งาน** โดยไม่มีงานค้างหรือผิดพลาด และตรวจความสมบูรณ์ของผลลัพธ์ได้ 100 รายการ ใช้เวลา 0.416 วินาที หรือประมาณ 240.38 งานต่อวินาที ผลนี้ยืนยันความเสถียรของกลไกคิวในเงื่อนไขดังกล่าวเท่านั้น ไม่ใช่การรับประกันผลของงานที่ต้องพึ่งพา AI provider, เครือข่าย, prompt หรือสิทธิ์ของระบบจริง
+
+---
+
 ## Features / คุณสมบัติ
 
 | Area | Description / รายละเอียด |
 | --- | --- |
 | Terminal UI | Rich CLI with banner, streaming output, colored diff and syntax highlight |
-| Web UI | `yousini serve` launches a local web interface and SSE API on `http://localhost:8787` |
+| Web UI | `yousini serve` launches a local web interface and SSE API on `http://localhost:8787`, including Dashboard, LSP and Queue Monitor panels |
+| Queue Monitor | Send, inspect, refresh and requeue background tasks from the Web UI with explicit `pending` / `running` / `done` / `failed` states |
+| Isolated shell | Optional Bubblewrap-backed shell isolation through `--sandbox`; it is fail-closed when the isolation backend is unavailable |
 | Remote connect | `yousini connect <url>` controls a running Yousini from the CLI |
 | Context file | `YOUSINI.md` stores persistent project instructions for the current workspace |
 | Skills | Markdown files in `skills/` are auto-loaded into the system prompt |
@@ -869,6 +901,8 @@ Free tier always works. Paying is only ever about optional extras.
 - File edits show diffs before applying.
 - Tool calls are wrapped in `try/except` so a failing tool never crashes the agent.
 - For untrusted environments use `serve --safe` or `--no-shell` / `--no-write`.
+- On Linux, `--sandbox` runs eligible foreground shell commands through Bubblewrap with network disabled and a read-only workspace by default. Use `--sandbox-write` only when the agent needs to write in the workspace; Yousini refuses isolated execution if Bubblewrap is unavailable rather than running on the host.
+- Background shell jobs are intentionally not available in sandbox mode until they can be isolated for their full lifecycle.
 - Never share your `.env` file; it is ignored by git.
 
 ---
