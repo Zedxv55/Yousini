@@ -296,7 +296,7 @@ def test_repl_commands_list_complete():
 
 
 def test_typewriter_stream_on_tty(monkeypatch):
-    """isatty=True → TypewriterStream start ได้ แล้ว write/stop ปลอดภัย"""
+    """preview จะเริ่มเมื่อมี token แรกเท่านั้น แล้วล้าง Live display หลังจบ"""
     import rich.live
     fake_live = mock.MagicMock()
     monkeypatch.setattr(rich.live, "Live", lambda *a, **kw: fake_live)
@@ -305,18 +305,20 @@ def test_typewriter_stream_on_tty(monkeypatch):
                         raising=False)
     ts = TypewriterStream()
     ts.start()
-    assert ts._started is True
+    assert ts._enabled is True
+    assert ts._started is False
+    fake_live.start.assert_not_called()
     ts.write("hello ")
     ts.write("world")
     ts.write("")  # token ว่าง → ข้าม
     ts.stop()
     assert ts._started is False
-    fake_live.start.assert_called()
-    fake_live.stop.assert_called()
+    fake_live.start.assert_called_once()
+    fake_live.stop.assert_called_once()
 
 
 def test_typewriter_stream_live_fail_still_works(monkeypatch):
-    """_Live start พัง → _started=False แตไม raise"""
+    """สร้าง Live ไม่สำเร็จตอน token แรก → ปิด preview อย่างเงียบ ๆ และไม่ raise"""
     import rich.live
     monkeypatch.setattr(rich.live, "Live",
                         mock.MagicMock(side_effect=RuntimeError("no term")))
@@ -325,8 +327,10 @@ def test_typewriter_stream_live_fail_still_works(monkeypatch):
                         raising=False)
     ts = TypewriterStream()
     ts.start()
+    assert ts._enabled is True
+    ts.write("x")  # ไม่ raise
     assert ts._started is False
-    ts.write("x")  # ไม raise
+    assert ts._enabled is False
     ts.stop()
 
 

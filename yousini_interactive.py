@@ -292,23 +292,36 @@ class TypewriterStream:
         self.model = model
         self._live = None
         self._started = False
+        self._enabled = False
         self._buffer = []
 
     def start(self):
-        if not _RICH_OK or not sys.stdin.isatty():
-            self._started = False
+        """เปิดโหมด preview แต่ยังไม่ render จนกว่าจะมี token แรก.
+
+        การไม่สร้าง Live frame ว่างช่วยให้ช่วงที่โมเดลกำลังคิดไม่เกิด animation
+        หรือ placeholder ที่ซ้อนกับสถานะคงที่ของ CLI.
+        """
+        self._enabled = bool(_RICH_OK and sys.stdin.isatty())
+        self._started = False
+
+    def _start_live(self):
+        if self._started or not self._enabled:
             return
         try:
             from rich.live import Live as _Live
-            self._live = _Live(Text("…"), console=self.console,
-                               refresh_per_second=15, transient=False)
+            self._live = _Live(Text(), console=self.console,
+                               refresh_per_second=12, transient=True)
             self._live.start()
             self._started = True
         except Exception:
-            self._started = False
+            self._live = None
+            self._enabled = False
 
     def write(self, token):
-        if not self._started or self._live is None or not token:
+        if not self._enabled or not token:
+            return
+        self._start_live()
+        if not self._started or self._live is None:
             return
         try:
             from rich.markdown import Markdown
@@ -325,6 +338,7 @@ class TypewriterStream:
                 pass
         self._live = None
         self._started = False
+        self._enabled = False
 
 
 def typewriter_stream():

@@ -196,8 +196,13 @@ C_ACCENT = "magenta"        # หัวข้อหลัก / แบนเน�
 C_PROMPT = "bold yellow"    # ข้อความขออนุมัติ
 
 
-def _think(text: str = "กำลังคิด…") -> Text:
-    return Text("⠿ " + text, style=C_THINK)
+def _think(text: str = "กำลังประมวลผล…") -> Text:
+    """สถานะสั้นแบบคงที่สำหรับงานที่กำลังดำเนินอยู่
+
+    หลีกเลี่ยง spinner ที่เขียนทับบรรทัดซ้ำ เพราะ Windows Terminal และ console
+    บางชนิดจะแสดงทุกเฟรมเป็นบรรทัดใหม่เมื่อคัดลอกหรือ redirect output.
+    """
+    return Text("· " + text, style=C_THINK)
 
 
 def _answer_panel(md_text: str) -> Panel:
@@ -2258,32 +2263,17 @@ def chat_turn(agent: Agent, user_text: str):
         content = []
         tool_calls = []
 
-        # live preview แบบ token-by-token (fail-open: ไม่ใช่ tty → no-op)
+        # Live preview เริ่มแสดงเมื่อได้รับ token แรกเท่านั้น จึงไม่มีกรอบว่างหรือ
+        # แอนิเมชันเขียนทับถี่ ๆ ระหว่างรอ provider ตอบกลับ.
         _tw_ctx = _ui_typewriter_stream()
         _tw_ctx.__enter__()
-        # spinner ธรรมดา (ไม่ใช้ rich.Live — กันเฟรมซ้ำ/จอเลอะบน Windows conhost)
-        stop_spin = threading.Event()
-        spinner = None
         if sys.stdout.isatty():
-            _frames = ["⠿", "⠸", "⠼", "⠴", "⠦", "⠇"]
+            console.print(_think("กำลังประมวลผล…"))
 
-            def _spin():
-                i = 0
-                while not stop_spin.is_set():
-                    sys.stdout.write("\r" + _frames[i % len(_frames)] + " กำลังคิด…")
-                    sys.stdout.flush()
-                    i += 1
-                    stop_spin.wait(0.1)
-
-            spinner = threading.Thread(target=_spin, daemon=True)
-            spinner.start()
-
+        # คง helper ไว้สำหรับเส้นทาง error/tool-call เดิม แต่ไม่มี background spinner
+        # ที่อาจทิ้งหลายร้อยบรรทัดใน Windows Terminal.
         def _stop_spinner():
-            if spinner is not None:
-                stop_spin.set()
-                spinner.join(timeout=0.5)
-                sys.stdout.write("\r" + " " * 32 + "\r")
-                sys.stdout.flush()
+            return None
 
         try:
             for chunk in stream:
