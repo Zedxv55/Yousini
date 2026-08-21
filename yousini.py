@@ -3001,7 +3001,6 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
                sandbox_writable=False):
     import http.server
     import socketserver
-    import threading
 
     from yousini_lsp import LSPEngine, _path_to_uri
 
