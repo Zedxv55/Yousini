@@ -274,16 +274,17 @@ class SymbolIndex:
         และ JS method ที่ตามหลัง class { (track class depth)"""
         out = []
         pats = [
-            # (regex, kind, ใช้ indentation จับ method/constant)
-            (r"^(async\s+)?def\s+([A-Za-z_]\w*)\s*\(", "function"),
-            (r"^(async\s+)?function\s+([A-Za-z_$]\w*)\s*\(", "function"),
-            (r"^([A-Za-z_$]\w*)\s*\(", "function"),
+            # (regex, kind)
+            (r"^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(", "function"),
+            (r"^(?:async\s+)?function\s+([A-Za-z_$]\w*)\s*\(", "function"),
             (r"^class\s+([A-Za-z_$]\w*)", "class"),
             (r"^(?:pub\s+)?fn\s+([A-Za-z_]\w*)", "function"),
             (r"^func\s+\([^)]*\)\s+([A-Za-z_]\w*)\s*\(", "function"),
             (r"^type\s+([A-Za-z_]\w*)\s*struct", "class"),
             (r"^([A-Z][A-Z0-9_]{1,})\s*=", "constant"),
             (r"^(?:const|let|var)\s+([A-Z][A-Z0-9_]{1,})\s*=", "constant"),
+            # JS/TS Method: name(...) {
+            (r"^([A-Za-z_$]\w*)\s*\([^)]*\)\s*\{", "method"),
         ]
         ext = path.suffix
         # JS/TS: class depth — เพิ่มเฉพาะตอนเข้า class declaration block,
@@ -304,23 +305,16 @@ class SymbolIndex:
                 m = re.match(pat, ls)
                 if not m:
                     continue
-                name = m.group(1) if kind != "function" else (
-                    m.group(2) if m.lastindex == 2 else m.group(1))
-                if kind == "function" and m.lastindex == 2:
-                    name = m.group(2)
+                name = m.group(1)
                 # Python: def ที่มี indentation = method (อยู่ใน class block)
                 if kind == "function" and ext == ".py":
-                    indented = len(line) - len(line.lstrip()) > 0
-                    if indented:
-                        out.append({"name": name, "kind": "method", "file": str(path),
-                                    "line": i, "signature": ls[:110]})
-                        break
-                # JS/TS: function/method ที่อยู่ภายใน class depth > 0 = method
-                if kind == "function" and ext in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+                    if len(line) - len(line.lstrip()) > 0:
+                        kind = "method"
+                # JS/TS: function ที่อยู่ภายใน class block = method
+                elif kind == "function" and ext in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
                     if class_depth > 0:
-                        out.append({"name": name, "kind": "method", "file": str(path),
-                                    "line": i, "signature": ls[:110]})
-                        break
+                        kind = "method"
+                
                 out.append({"name": name, "kind": kind, "file": str(path),
                             "line": i, "signature": ls[:110]})
                 break
