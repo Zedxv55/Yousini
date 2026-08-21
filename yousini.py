@@ -936,7 +936,8 @@ class Agent:
     def __init__(self, model=MODEL, cwd=os.getcwd(), interactive=True,
                  allow_shell=True, allow_write=True, checkpoint=CHECKPOINT,
                  hooks_dir=HOOKS_DIR, context_file=CONTEXT_FILE,
-                 skills_dir=SKILLS_DIR, jobs=None):
+                 skills_dir=SKILLS_DIR, jobs=None, sandbox=False,
+                 sandbox_writable=False):
         self.model = model
         self.cwd = os.path.abspath(cwd)
         self.auto_run = AUTO_RUN
@@ -948,6 +949,13 @@ class Agent:
         self.checkpoint_enabled = checkpoint
         self._did_checkpoint = False
         self.jobs = jobs or JobManager()
+        # Sandbox แยกเฉพาะ shell tool แบบ opt-in. หาก bwrap ไม่พร้อม คำสั่งจะ
+        # fail closed แทนการไปรันบน host โดยไม่บอกผู้ใช้.
+        self.sandbox = None
+        self.sandbox_writable = bool(sandbox_writable)
+        if sandbox:
+            from yousini_sandbox import Sandbox
+            self.sandbox = Sandbox(workspace=self.cwd, writable=self.sandbox_writable)
         # บริบท + สกิล
         self.context_file = context_file
         self.skills_dir = skills_dir
@@ -1226,12 +1234,30 @@ class Agent:
                 console.print(Text("↩ ยกเลิกโดยผู้ใช้", style=C_WARN))
                 return "ปฏิเสธโดยผู้ใช้"
         if run_in_background:
+            if self.sandbox:
+                return ("Error: sandbox shell ยังไม่รองรับ background job เพื่อไม่ให้ "
+                        "หลุดไปทำงานนอก isolation; ใช้ foreground หรือ worker ที่แยก process")
             t = timeout or SHELL_TIMEOUT
             jid, job, err = self.jobs.start(command, self.cwd, t)
             if err:
                 return err
             console.print(Text(f"↻ เริ่มงาน background {jid}: {command}", style="cyan"))
             return f"เริ่มงาน background {jid} (รันไม่บล็อก) ใช้ read_job(job_id='{jid}') เพื่อดูผล"
+        if self.sandbox:
+            self.sandbox.workspace = Path(self.cwd).resolve()
+            self.sandbox.timeout = timeout or SHELL_TIMEOUT
+            result = self.sandbox.run(command)
+            if result.get("unavailable"):
+                return result.get("stderr", "Sandbox unavailable")
+            output = result.get("stdout", "")
+            err = result.get("stderr", "")
+            detail = output + (("\n" if output and err else "") + err)
+            return _truncate(
+                f"[sandbox: {result.get('backend', 'bwrap')} | isolated: "
+                f"{'yes' if result.get('isolated') else 'no'} | "
+                f"exit code: {result.get('exit_code', -1)}]\n"
+                f"{detail or '(ไม่มีผลลัพธ์)'}"
+            )
         try:
             t = timeout or SHELL_TIMEOUT
             proc = subprocess.Popen(["bash", "-c", command], cwd=self.cwd,
@@ -2981,7 +3007,8 @@ def _load_webui():
 
 
 def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
-               allow_shell=True, allow_write=True):
+               allow_shell=True, allow_write=True, sandbox=False,
+               sandbox_writable=False):
     import http.server
     import socketserver
     import threading
@@ -3169,7 +3196,9 @@ def serve_main(host="127.0.0.1", port=8787, token="", safe=False,
             if sid not in sessions:
                 ag = Agent(interactive=False,
                            allow_shell=(allow_shell and not safe),
-                           allow_write=(allow_write and not safe))
+                           allow_write=(allow_write and not safe),
+                           sandbox=(sandbox and not safe),
+                           sandbox_writable=(sandbox_writable and not safe))
                 # โหลด session เดิมจากดิสก์ (ถ้ามี) → บริบทข้าม restart
                 saved = store.load(f"serve-{sid}")
                 if saved:
@@ -4714,6 +4743,8 @@ def main():
             safe=bool(o.get("safe")),
             allow_shell=not bool(o.get("no-shell")),
             allow_write=not bool(o.get("no-write")),
+            sandbox=bool(o.get("sandbox")),
+            sandbox_writable=bool(o.get("sandbox-write")),
         )
         return
 
@@ -5019,7 +5050,14 @@ def main():
         resume_main()
         return
 
-    agent = Agent()
+    # --sandbox isolates shell tool calls only; --sandbox-write additionally grants
+    # those shell commands write access to the current workspace.
+    sandbox_enabled = "--sandbox" in argv
+    sandbox_writable = "--sandbox-write" in argv
+    if sandbox_writable:
+        sandbox_enabled = True
+    argv = [a for a in argv if a not in ("--sandbox", "--sandbox-write")]
+    agent = Agent(sandbox=sandbox_enabled, sandbox_writable=sandbox_writable)
     if argv:
         chat_turn(agent, " ".join(argv))
         return

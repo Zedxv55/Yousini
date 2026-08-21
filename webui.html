@@ -287,6 +287,21 @@ textarea::placeholder{color:var(--faint)}
   .hint{display:none}
   .tl{width:88vw}
 }
+/* ---------- queue monitor ---------- */
+.queue-note{margin:0 0 12px;color:var(--faint);font-size:12px;line-height:1.55}
+.queue-note code{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:var(--panel);border:1px solid var(--stroke);border-radius:5px;padding:1px 4px}
+.queue-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:0 0 12px}
+.q-stat{border:1px solid var(--stroke);background:var(--panel);border-radius:10px;padding:7px 8px;text-align:center}
+.q-stat b{display:block;font-family:var(--mono);font-size:17px;line-height:1.1;color:var(--ink)}
+.q-stat span{display:block;color:var(--faint);font-family:var(--mono);font-size:9px;letter-spacing:.45px;margin-top:3px}
+.q-stat.pending b{color:var(--warn)}.q-stat.running b{color:var(--blue)}.q-stat.done b{color:var(--ok)}.q-stat.failed b{color:var(--err)}
+.q-task{border:1px solid var(--stroke);background:var(--panel);border-radius:11px;margin:7px 0;padding:9px 10px;animation:riseIn .2s ease both}
+.q-top{display:flex;align-items:center;gap:7px;margin-bottom:5px}.q-id{font-family:var(--mono);font-size:10px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.q-status{font-family:var(--mono);font-size:9px;letter-spacing:.7px;border:1px solid currentColor;border-radius:999px;padding:2px 6px;text-transform:uppercase}.q-status.pending{color:var(--warn)}.q-status.running{color:var(--blue)}.q-status.done{color:var(--ok)}.q-status.failed{color:var(--err)}
+.q-prompt{font-size:12px;line-height:1.55;color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.q-meta{font-family:var(--mono);color:var(--faint);font-size:9.5px;margin-top:6px}
+.queue-form{border-top:1px solid var(--stroke);margin-top:13px;padding-top:12px}.queue-form label{display:block;font-family:var(--mono);letter-spacing:1px;color:var(--faint);font-size:10px;margin:0 0 5px}.queue-form textarea{width:100%;border:1px solid var(--stroke);border-radius:9px;background:var(--panel);font-size:12px;padding:8px;color:var(--ink);min-height:66px}.queue-form textarea:focus{border-color:var(--acc2)}
+.queue-send{width:100%;margin-top:7px}.queue-msg{font-size:11px;color:var(--faint);margin-top:7px;min-height:16px}.queue-msg.error{color:var(--err)}.queue-msg.ok{color:var(--ok)}
+@media(max-width:560px){.queue-summary{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -316,6 +331,10 @@ textarea::placeholder{color:var(--faint)}
     </button>
     <button class="icon-btn" id="dashBtn" title="Dashboard">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5h12M4 13.5V8M8 13.5V3.5M12 13.5V6"/></svg>
+    </button>
+    <button class="icon-btn" id="queueBtn" title="Queue Monitor">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7.5"/><circle cx="12.5" cy="12.5" r="1" fill="currentColor"/></svg>
+      <span class="badge" id="queueBadge">0</span>
     </button>
     <button class="icon-btn" id="themeBtn" title="สลับธีม">
       <svg class="theme-ic icon-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
@@ -408,6 +427,24 @@ textarea::placeholder{color:var(--faint)}
     </div>
   </div>
 </aside>
+<aside class="tl cd" id="queuePanel">
+  <div class="tl-head"><span>QUEUE MONITOR</span><span class="tl-count" id="queueCount">—</span></div>
+  <div class="cd-body">
+    <p class="queue-note">ส่งงานไว้ในคิว แล้วเริ่ม worker แยกต่างหากด้วย <code>yousini work --worker default</code> เพื่อประมวลผลต่อเนื่อง</p>
+    <div class="cd-actions">
+      <button class="cd-btn" id="queueRefreshBtn">Refresh</button>
+      <button class="cd-btn" id="queueAllBtn">All tasks</button>
+    </div>
+    <div class="queue-summary" id="queueSummary"></div>
+    <div class="cd-result" id="queueResult"><div class="tl-empty">กด Refresh เพื่อดูสถานะงานในคิว</div></div>
+    <div class="queue-form">
+      <label for="queuePrompt">ส่งงานเข้า queue</label>
+      <textarea id="queuePrompt" rows="3" spellcheck="true" placeholder="เช่น ตรวจสอบ tests ทั้งหมดและสรุปงานที่ล้มเหลว"></textarea>
+      <button class="cd-btn queue-send" id="queueSendBtn">Add to queue</button>
+      <div class="queue-msg" id="queueMsg"></div>
+    </div>
+  </div>
+</aside>
 
 <script>
 /* ---------- util ---------- */
@@ -417,7 +454,8 @@ const chat=document.getElementById('chat'), input=document.getElementById('input
       themeBtn=document.getElementById('themeBtn'), tlPanel=document.getElementById('tlPanel'),
       codeBtn=document.getElementById('codeBtn'), codePanel=document.getElementById('codePanel'),
       marketBtn=document.getElementById('marketBtn'), marketPanel=document.getElementById('marketPanel'),
-      dashBtn=document.getElementById('dashBtn'), dashPanel=document.getElementById('dashPanel');
+      dashBtn=document.getElementById('dashBtn'), dashPanel=document.getElementById('dashPanel'),
+      queueBtn=document.getElementById('queueBtn'), queuePanel=document.getElementById('queuePanel');
 const $=id=>document.getElementById(id);
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -461,7 +499,7 @@ function toggleTimeline(force){
   if(open)$('tlBody').scrollTop=$('tlBody').scrollHeight;
 }
 tlBtn.onclick=()=>toggleTimeline();
-function closePanels(){toggleTimeline(false);toggleCode(false);toggleMarket(false);toggleDash(false)}
+function closePanels(){toggleTimeline(false);toggleCode(false);toggleMarket(false);toggleDash(false);toggleQueue(false)}
 $('scrim').onclick=closePanels;
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
 
@@ -530,6 +568,66 @@ $('mkRefreshBtn').onclick=()=>mkLoad('catalog','');
 $('mkInstalledBtn').onclick=()=>mkLoad('installed','');
 $('mkSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('mkSearchBtn').click()}});
 mkLoad('installed','');
+
+/* ---------- queue monitor ---------- */
+function toggleQueue(force){
+  const open=force!==undefined?force:!queuePanel.classList.contains('open');
+  queuePanel.classList.toggle('open',open);
+  $('scrim').classList.toggle('on',open);
+  queueBtn.classList.toggle('active',open);
+  if(open){toggleTimeline(false);toggleCode(false);toggleMarket(false);toggleDash(false);queueLoad()}
+}
+queueBtn.onclick=()=>toggleQueue();
+
+async function queueApi(action,payload){
+  const isGet=action==='status';
+  const url='api/queue/'+action;
+  const res=await fetch(url,{method:isGet?'GET':'POST',headers:{'Content-Type':'application/json','X-Yousini-Token':TOKEN},body:isGet?undefined:JSON.stringify(payload||{})});
+  if(res.status===401){
+    const t=prompt('เซิร์ฟเวอร์กำหนดให้ต้องใช้ token:');
+    if(t){TOKEN=t;localStorage.setItem('yousini_token',t);return queueApi(action,payload)}
+  }
+  if(!res.ok)throw new Error('HTTP '+res.status);
+  return res.json();
+}
+function queueStat(label,value,cls){
+  const d=document.createElement('div');d.className='q-stat '+cls;
+  d.innerHTML='<b>'+esc(value==null?0:value)+'</b><span>'+esc(label)+'</span>';return d;
+}
+function queueTask(task){
+  const d=document.createElement('div');d.className='q-task';
+  const st=String(task.status||'pending');
+  d.innerHTML='<div class="q-top"><span class="q-id">'+esc(task.id||'—')+'</span><span class="q-status '+esc(st)+'">'+esc(st)+'</span></div>'+
+    '<div class="q-prompt">'+esc(task.prompt||'')+'</div>'+
+    '<div class="q-meta">worker '+esc(task.worker||'default')+' · priority '+esc(task.priority||0)+' · '+esc(task.created_at||'')+'</div>';
+  if(st==='failed'){
+    const b=document.createElement('button');b.className='cd-btn';b.textContent='Requeue';b.style.marginTop='7px';
+    b.onclick=async()=>{b.disabled=true;try{const r=await queueApi('requeue',{id:task.id});if(!r.ok)throw new Error(r.error||'requeue failed');tl('info','Queue — ส่งงาน <b>'+esc(task.id)+'</b> กลับเข้าคิวแล้ว');queueLoad()}catch(e){queueMessage(e.message,'error')}finally{b.disabled=false}};
+    d.appendChild(b);
+  }
+  return d;
+}
+function queueMessage(text,kind){const e=$('queueMsg');e.textContent=text||'';e.className='queue-msg '+(kind||'')}
+async function queueLoad(){
+  const out=$('queueResult'), summary=$('queueSummary');out.innerHTML='<div class="tl-empty">กำลังโหลดสถานะคิว...</div>';
+  try{
+    const r=await queueApi('status');if(!r.ok)throw new Error(r.error||'โหลด queue ไม่สำเร็จ');
+    const c=r.counts||{};const total=Object.values(c).reduce((sum,n)=>sum+(Number(n)||0),0);
+    $('queueCount').textContent=total;$('queueBadge').textContent=(c.pending||0)+(c.failed||0);$('queueBadge').classList.toggle('on',((c.pending||0)+(c.failed||0))>0);
+    summary.innerHTML='';[['pending',c.pending||0,'pending'],['running',c.running||0,'running'],['done',c.done||0,'done'],['failed',c.failed||0,'failed']].forEach(x=>summary.appendChild(queueStat(x[0],x[1],x[2])));
+    const tasks=r.tasks||[];out.innerHTML='';
+    if(!tasks.length){out.innerHTML='<div class="tl-empty">ยังไม่มีงานในคิว — เพิ่มงานด้านล่าง แล้วเริ่ม worker เพื่อประมวลผล</div>';return}
+    tasks.forEach(t=>out.appendChild(queueTask(t)));
+  }catch(e){summary.innerHTML='';out.innerHTML='<div class="tl-empty" style="color:var(--err)">ผิดพลาด: '+esc(e.message)+'</div>'}
+}
+$('queueRefreshBtn').onclick=()=>queueLoad();
+$('queueAllBtn').onclick=()=>queueLoad();
+$('queueSendBtn').onclick=async()=>{
+  const box=$('queuePrompt'), prompt=box.value.trim();if(!prompt){queueMessage('กรุณาระบุงานก่อนส่ง','error');box.focus();return}
+  const b=$('queueSendBtn');b.disabled=true;queueMessage('กำลังเพิ่มงานเข้าคิว...');
+  try{const r=await queueApi('enqueue',{prompt,worker:'default',from:'web'});if(!r.ok)throw new Error(r.error||'ส่งงานไม่สำเร็จ');box.value='';queueMessage('เพิ่มงาน '+(r.task&&r.task.id?r.task.id:'')+' เรียบร้อยแล้ว','ok');tl('info','Queue — เพิ่มงานใหม่ <b>'+esc(r.task&&r.task.id?r.task.id:'')+'</b>');queueLoad()}catch(e){queueMessage(e.message,'error')}finally{b.disabled=false}
+};
+$('queuePrompt').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')$('queueSendBtn').click()});
 
 /* ---------- dashboard ---------- */
 function toggleDash(force){
